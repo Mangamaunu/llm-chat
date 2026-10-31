@@ -1,3 +1,5 @@
+import anthropic
+
 from anthropic_client import AnthropicClient
 from commands import Context, dispatch
 
@@ -17,8 +19,13 @@ def main() -> None:
             if not dispatch(ctx, line):
                 break
         else:
-            for text in ctx.client.send(line):
-                print(text, end="", flush=True)
+            try:
+                for text in ctx.client.send(line):
+                    print(text, end="", flush=True)
+            except anthropic.APIError as exc:
+                # Not retryable (e.g. 400) or retries ran out; keep the chat running.
+                print(f"\n[error: {exc}]")
+                continue
             print()
             u = ctx.client.last_usage
             if u is not None:
