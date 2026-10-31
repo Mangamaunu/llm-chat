@@ -20,6 +20,11 @@ def main() -> None:
             for text in ctx.client.send(line):
                 print(text, end="", flush=True)
             print()
+            u = ctx.client.last_usage
+            if u is not None:
+                priced = ctx.client.usage.cost_of(u)
+                cost = f"${priced[0]:.6f}" if priced else "n/a"
+                print(f"[{u.model}: {u.input_tokens} in / {u.output_tokens} out, {cost}]")
 
 
 if __name__ == "__main__":
