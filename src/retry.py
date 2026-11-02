@@ -5,7 +5,7 @@ import anthropic
 
 def is_retryable(exc: BaseException) -> bool:
     """429, 5xx and overloaded errors are retried; 400 and other 4xx are client bugs."""
-    if isinstance(exc, (anthropic.APIConnectionError, anthropic.APITimeoutError)):
+    if isinstance(exc, (anthropic.APIConnectionError, anthropic.APITimeoutError)): #todo: add OpenAi error for retries
         return True  # network blip, the request may not have reached the API
     if not isinstance(exc, anthropic.APIStatusError):
         return False

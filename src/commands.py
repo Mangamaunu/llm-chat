@@ -1,13 +1,13 @@
 from dataclasses import dataclass
 from typing import Callable
 
-from anthropic_client import AnthropicClient
+from chat_client import ChatClient
 
 
 @dataclass
 class Context:
     """Shared state available to every command."""
-    client: AnthropicClient
+    client: ChatClient
 
 
 @dataclass

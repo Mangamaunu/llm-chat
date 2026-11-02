@@ -1,11 +1,52 @@
-import anthropic
+import argparse
 
-from anthropic_client import AnthropicClient
+import anthropic
+import openai
+
+from chat_client import ChatClient
 from commands import Context, dispatch
 
 
-def main() -> None:
-    ctx = Context(client=AnthropicClient())
+def _anthropic_client() -> ChatClient:
+    from anthropic_client import AnthropicClient
+    return AnthropicClient()
+
+
+def _openai_client() -> ChatClient:
+    from openai_client import OpenAiClient
+    return OpenAiClient()
+
+
+# --client value -> function that creates that client
+CLIENTS = {
+    "anthropic": _anthropic_client,
+    "openai": _openai_client,
+}
+
+# Errors from either SDK that should be reported without ending the chat.
+API_ERRORS = (anthropic.APIError, openai.APIError)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="llm-chat", description="Chat with an LLM in the terminal.")
+    parser.add_argument(
+        "--client",
+        choices=CLIENTS,
+        default="anthropic",
+        help="which API to use (default: %(default)s)",
+    )
+    parser.add_argument("--model", help="model to use instead of the client's default")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    client = CLIENTS[args.client]()
+    if args.model:
+        client.set_model(args.model)
+    ctx = Context(client=client)
+    print(f"[{args.client}: {client.model}]")
+
     while True:
         try:
             line = input("How can I help you today?\n").strip()
@@ -20,9 +61,9 @@ def main() -> None:
                 break
         else:
             try:
-                for text in ctx.client.send(line):
+                for text in ctx.client.stream_chat(line):
                     print(text, end="", flush=True)
-            except anthropic.APIError as exc:
+            except API_ERRORS as exc:
                 # Not retryable (e.g. 400) or retries ran out; keep the chat running.
                 print(f"\n[error: {exc}]")
                 continue

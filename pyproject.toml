@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-chat"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic",
+    "openai",
+]
+
+[project.scripts]
+# `llm-chat` runs main() from src/main.py
+llm-chat = "main:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["main", "commands", "chat_client", "anthropic_client", "openai_client", "retry", "usage"]
