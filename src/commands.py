@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Callable
 
-from chat_client import ChatClient
+from chat.chat_client import ChatClient
 
 
 @dataclass

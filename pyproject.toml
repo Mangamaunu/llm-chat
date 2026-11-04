@@ -17,4 +17,5 @@ llm-chat = "main:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = ["main", "commands", "chat_client", "anthropic_client", "openai_client", "retry", "usage"]
+py-modules = ["main", "commands", "retry", "usage"]
+packages = ["chat"]

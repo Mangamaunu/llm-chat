@@ -1,19 +1,17 @@
 import argparse
 
-import anthropic
-import openai
-
-from chat_client import ChatClient
+from chat.chat_client import ChatClient
+from chat.error import LLMError
 from commands import Context, dispatch
 
 
 def _anthropic_client() -> ChatClient:
-    from anthropic_client import AnthropicClient
+    from chat.anthropic_client import AnthropicClient
     return AnthropicClient()
 
 
 def _openai_client() -> ChatClient:
-    from openai_client import OpenAiClient
+    from chat.openai_client import OpenAiClient
     return OpenAiClient()
 
 
@@ -22,9 +20,6 @@ CLIENTS = {
     "anthropic": _anthropic_client,
     "openai": _openai_client,
 }
-
-# Errors from either SDK that should be reported without ending the chat.
-API_ERRORS = (anthropic.APIError, openai.APIError)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -63,9 +58,9 @@ def main(argv: list[str] | None = None) -> None:
             try:
                 for text in ctx.client.stream_chat(line):
                     print(text, end="", flush=True)
-            except API_ERRORS as exc:
+            except LLMError as ex:
                 # Not retryable (e.g. 400) or retries ran out; keep the chat running.
-                print(f"\n[error: {exc}]")
+                print(f"\n[error: {ex}]")
                 continue
             print()
             u = ctx.client.last_usage
