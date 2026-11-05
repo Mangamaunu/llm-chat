@@ -6,8 +6,8 @@ from .chat_client import ChatClient
 from usage import RequestUsage
 from .error import LLMError, ConnectionFailed, RateLimited, BadRequest, Overloaded, ServerError, retry_after
 
-_API_KEY=os.environ.get("ANTHROPIC_API_KEY")
-_DEFAULT_MODEL="claude-opus-5-5"
+_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5-5")
 
 
 _USAGE_FIELDS = (
@@ -30,7 +30,7 @@ class AnthropicClient(ChatClient):
     def __init__(self):
         super().__init__()
         self._client = Anthropic(api_key=_API_KEY, max_retries=0)
-        self.model = _DEFAULT_MODEL
+        self.model = _ANTHROPIC_MODEL
 
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         try:

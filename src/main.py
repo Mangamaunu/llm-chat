@@ -59,7 +59,6 @@ def main(argv: list[str] | None = None) -> None:
                 for text in ctx.client.stream_chat(line):
                     print(text, end="", flush=True)
             except LLMError as ex:
-                # Not retryable (e.g. 400) or retries ran out; keep the chat running.
                 print(f"\n[error: {ex}]")
                 continue
             print()

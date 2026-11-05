@@ -1,19 +1,23 @@
+import os
+
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APIStatusError
 
 from .chat_client import ChatClient
 from .error import LLMError, ConnectionFailed, RateLimited, BadRequest, ServerError, retry_after
 from usage import RequestUsage
 
-# Ollama serves an OpenAI-compatible API on this address; the key is ignored but required.
-_BASE_URL = "http://localhost:11434/v1/"
-_DEFAULT_MODEL = "llama3.2"
+# Defaults point at a local Ollama server, which serves an OpenAI-compatible API.
+_OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1/")
+_OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "ollama")
+_OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "llama3.2")
 
 
 class OpenAiClient(ChatClient):
-    def __init__(self, base_url: str = _BASE_URL, api_key: str = "ollama"):
+    # Ollama ignores the API key, but the OpenAI SDK requires one to be set.
+    def __init__(self, base_url: str = _OPENAI_BASE_URL, api_key: str = _OPENAI_API_KEY):
         super().__init__()
         self._client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
-        self.model = _DEFAULT_MODEL
+        self.model = _OPENAI_MODEL
 
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         # The OpenAI API takes the system prompt as the first message.

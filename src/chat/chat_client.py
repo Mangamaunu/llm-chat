@@ -27,14 +27,6 @@ class ChatClient(ABC):
         self.system = system
 
     def stream_chat(self, content):
-        """Send a user message and yield the reply text as it streams in.
-
-        The user message and the full reply are kept in the conversation
-        history, so later calls include all earlier turns.
-
-        429, 5xx and overloaded errors are retried with exponential backoff
-        and jitter, as long as no reply text has been yielded yet.
-        """
         self.messages.append({"role": "user", "content": content})
         reply_parts = []
         attempt = 0
@@ -46,7 +38,7 @@ class ChatClient(ABC):
                     break
                 except Exception as exc:
                     if usage.input_tokens or usage.output_tokens:
-                        # The attempt was billed even though it didn't finish.
+                        # The attempt used tokens (and may be billed) even though it didn't finish.
                         self.usage.record(usage)
                     # Once text has been shown, a retry would print the reply twice.
                     if reply_parts or attempt >= self.max_retries or not is_retryable(exc):
