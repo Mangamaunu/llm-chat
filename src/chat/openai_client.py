@@ -36,8 +36,7 @@ class OpenAiClient(ChatClient):
             for chunk in stream:
                 # With include_usage, the last chunk has the token counts and no choices.
                 if chunk.usage is not None:
-                    usage.input_tokens = chunk.usage.prompt_tokens
-                    usage.output_tokens = chunk.usage.completion_tokens
+                    _apply_usage(usage, chunk.usage)
                 if chunk.choices:
                     text = chunk.choices[0].delta.content
                     if text:
@@ -67,3 +66,14 @@ def _to_llm_error(ex: APIError) -> LLMError:
     else:
         return BadRequest(ex.message, retry_after=retry_after(ex))
 
+
+def _apply_usage(target: RequestUsage, source) -> None:
+    """Split OpenAI's prompt_tokens into uncached input, cache read and cache write."""
+    details = getattr(source, "prompt_tokens_details", None)
+    cached = getattr(details, "cached_tokens", None) or 0
+    written = getattr(details, "cache_write_tokens", None) or 0
+
+    target.cache_read_input_tokens = cached
+    target.cache_creation_input_tokens = written
+    target.input_tokens = max(0, source.prompt_tokens - cached - written)
+    target.output_tokens = source.completion_tokens

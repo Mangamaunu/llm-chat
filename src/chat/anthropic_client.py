@@ -18,14 +18,6 @@ _USAGE_FIELDS = (
 )
 
 
-def _apply_usage(target: RequestUsage, source) -> None:
-    """Copy the token counts that are present in an API usage object."""
-    for field in _USAGE_FIELDS:
-        value = getattr(source, field, None)
-        if value is not None:
-            setattr(target, field, value)
-
-
 class AnthropicClient(ChatClient):
     def __init__(self):
         super().__init__()
@@ -84,3 +76,11 @@ def _error_type(exc: APIStatusError) -> str | None:
         if isinstance(err, dict):
             return err.get("type")
     return None
+
+
+def _apply_usage(target: RequestUsage, source) -> None:
+    """Copy the token counts that are present in an API usage object."""
+    for field in _USAGE_FIELDS:
+        value = getattr(source, field, None)
+        if value is not None:
+            setattr(target, field, value)
