@@ -8,7 +8,7 @@ from usage import RequestUsage, UsageTracker
 
 class ChatClient(ABC):
     def __init__(self, max_retries: int = 5, retry_base_delay: float = 1.0, retry_max_delay: float = 30.0):
-        self.model = ""
+        self.model: str | None = None
         self.system = ""
         self.usage = UsageTracker()
         self.last_usage: RequestUsage | None = None
@@ -16,9 +16,14 @@ class ChatClient(ABC):
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self.retry_max_delay = retry_max_delay
+        self.max_history_tokens: int | None = None
+        self.trim_target_ratio: float = 0.5
+        self.history_tokens: int = 0
+        self.last_trimmed: int = 0
 
     def reset(self):
         self.messages.clear()
+        self.history_tokens = 0
 
     def set_model(self, model):
         self.model = model
@@ -54,7 +59,30 @@ class ChatClient(ABC):
         self.messages.append({"role": "assistant", "content": "".join(reply_parts)})
         self.usage.record(usage)
         self.last_usage = usage
+        self.history_tokens = usage.prompt_tokens + usage.output_tokens
+        self.last_trimmed = self._trim_history()
+
+    def _trim_history(self) -> int:
+        """Removes the oldest turns if the history exceeds `max_history_tokens`. Returns the number of messages removed."""
+        if not self.max_history_tokens or self.history_tokens <= self.max_history_tokens:
+            return 0
+
+        target = int(self.max_history_tokens * self.trim_target_ratio)
+        dropped = 0
+
+        while self.history_tokens > target and len(self.messages) > 2:
+            assert self.messages[0]["role"] == "user"
+            user_message = self.messages.pop(0)
+            assistant_message = self.messages.pop(0)
+            self.history_tokens = max(0, self.history_tokens - estimate_tokens(user_message) - estimate_tokens(assistant_message))
+            dropped += 2
+
+        return dropped
 
     @abstractmethod
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         ...
+
+
+def estimate_tokens(message: dict) -> int:
+    return len(message["content"]) // 4 + 4 # ~4 chars per token in English; underestimates other languages.

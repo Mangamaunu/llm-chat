@@ -1,4 +1,5 @@
 import argparse
+import sys
 
 from chat.chat_client import ChatClient
 from chat.error import LLMError
@@ -31,7 +32,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="which API to use (default: %(default)s)",
     )
     parser.add_argument("--model", help="model to use instead of the client's default")
-    return parser.parse_args(argv)
+    parser.add_argument("--max-history-tokens", type=int, default=None, metavar="N",
+                        help="trim old messages when history exceeds N tokens")
+
+    args = parser.parse_args(argv)
+    if args.max_history_tokens is not None and args.max_history_tokens <= 0:
+        parser.error("--max-history-tokens must be positive")
+
+    return args
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -39,6 +47,8 @@ def main(argv: list[str] | None = None) -> None:
     client = CLIENTS[args.client]()
     if args.model:
         client.set_model(args.model)
+    if args.max_history_tokens:
+        client.max_history_tokens = args.max_history_tokens
     ctx = Context(client=client)
     print(f"[{args.client}: {client.model}]")
 
@@ -67,6 +77,10 @@ def main(argv: list[str] | None = None) -> None:
                 priced = ctx.client.usage.cost_of(u)
                 cost = f"${priced[0]:.6f}" if priced else "n/a"
                 print(f"[{u.model}: {u.input_tokens} in / {u.output_tokens} out, {cost}]")
+
+            if ctx.client.last_trimmed:
+                tokens = f"{ctx.client.history_tokens:,}".replace(",", " ")
+                print(f"[history trimmed: dropped {ctx.client.last_trimmed} old messages, ~{tokens} tokens left]", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
