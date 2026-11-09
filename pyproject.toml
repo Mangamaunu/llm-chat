@@ -19,3 +19,10 @@ llm-chat = "main:main"
 package-dir = { "" = "src" }
 py-modules = ["main", "commands", "retry", "usage"]
 packages = ["chat"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
