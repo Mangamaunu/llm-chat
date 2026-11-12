@@ -58,10 +58,34 @@ def test_reset_clears_history_but_keeps_system_prompt():
     assert client.system == "sys"
 
 
-def test_empty_reply_is_stored_as_empty_assistant_message():
+def test_empty_reply_is_not_stored():
+    # Anthropic rejects empty assistant messages, so one would break every later request.
     client = FakeClient(Reply([]))
     assert chat(client, "hi") == ""
-    assert client.messages[-1] == {"role": "assistant", "content": ""}
+    assert client.messages == []
+
+
+def test_empty_reply_keeps_earlier_history():
+    client = FakeClient("first", Reply([]))
+    chat(client, "q1")
+    before = list(client.messages)
+    chat(client, "q2")
+    assert client.messages == before
+
+
+def test_chat_continues_normally_after_empty_reply():
+    client = FakeClient(Reply([]), "ok")
+    chat(client, "q1")
+    assert chat(client, "q2") == "ok"
+    assert client.requests[1]["messages"] == [{"role": "user", "content": "q2"}]
+
+
+def test_empty_reply_tokens_are_still_recorded():
+    # The request was answered (and billed) even though the text is empty.
+    client = FakeClient(Reply([], input_tokens=40, output_tokens=3))
+    chat(client, "hi")
+    mu = client.usage.by_model[FAKE_MODEL]
+    assert (mu.requests, mu.input_tokens, mu.output_tokens) == (1, 40, 3)
 
 
 # ---- usage ----
@@ -234,3 +258,11 @@ def test_can_chat_again_after_a_failure():
         {"role": "user", "content": "q2"},
         {"role": "assistant", "content": "ok"},
     ]
+
+
+@pytest.mark.parametrize("chunks", [[""], ["", ""], [" "], ["\n", "  "]])
+def test_reply_without_visible_text_is_not_stored(chunks):
+    # Anthropic rejects assistant messages that are empty or only whitespace.
+    client = FakeClient(Reply(chunks))
+    chat(client, "hi")
+    assert client.messages == []

@@ -3,14 +3,17 @@ import builtins
 
 import pytest
 
+import chat.chat_client
 import main
-from chat.error import BadRequest
+from chat.error import BadRequest, ServerError
 from fake_client import FakeClient, Reply
 
 
 def run(monkeypatch, client: FakeClient, lines: list[str], argv: list[str] | None = None) -> None:
     """Run main() with `client` and the given input lines; the input ends with EOF."""
     monkeypatch.setitem(main.CLIENTS, "anthropic", lambda: client)
+    monkeypatch.setitem(main.CLIENTS, "openai", lambda: client)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     inputs = iter(lines)
 
     def fake_input(prompt=""):
@@ -118,3 +121,118 @@ def test_no_trim_notice_without_limit(monkeypatch, capsys):
     run(monkeypatch, client, ["a" + long, "b" + long, "c" + long])
     captured = capsys.readouterr()
     assert "[history trimmed" not in captured.out + captured.err
+
+
+# ---- startup checks ----
+
+def test_missing_anthropic_key_exits_with_message(monkeypatch, capsys):
+    # Uses the real factory: the key check lives in _anthropic_client().
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        main.main([])
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "ANTHROPIC_API_KEY" in captured.out + captured.err
+
+
+def test_openai_client_does_not_need_anthropic_key(monkeypatch, capsys):
+    client = FakeClient("ok")
+    inputs = iter(["hi"])
+    monkeypatch.setitem(main.CLIENTS, "openai", lambda: client)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def fake_input(prompt=""):
+        try:
+            return next(inputs)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+    main.main(["--client", "openai"])
+    assert "ok\n" in capsys.readouterr().out
+
+
+# ---- the loop survives interruptions and unexpected errors ----
+
+def test_ctrl_c_during_reply_keeps_chat_running(monkeypatch, capsys):
+    client = FakeClient(Reply(["Hel"], error=KeyboardInterrupt()), "ok")
+    run(monkeypatch, client, ["first", "second"])
+    out = capsys.readouterr().out
+    assert "[interrupted]" in out
+    assert "ok\n" in out
+    assert client.messages == [
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+
+def test_ctrl_c_while_waiting_to_retry_keeps_chat_running(monkeypatch, capsys):
+    def interrupted_sleep(delay):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(chat.chat_client.time, "sleep", interrupted_sleep)
+    client = FakeClient(ServerError("down"), "ok")
+    run(monkeypatch, client, ["first", "second"])
+    out = capsys.readouterr().out
+    assert "[interrupted]" in out
+    assert "ok\n" in out
+
+
+def test_unexpected_error_is_shown_and_loop_continues(monkeypatch, capsys):
+    client = FakeClient(ValueError("bug"), "ok")
+    run(monkeypatch, client, ["first", "second"])
+    out = capsys.readouterr().out
+    assert "[unexpected error: ValueError('bug')]" in out
+    assert "ok\n" in out
+    assert client.messages[0] == {"role": "user", "content": "second"}
+
+
+def test_unexpected_error_does_not_repeat_previous_usage_line(monkeypatch, capsys):
+    client = FakeClient(Reply(input_tokens=7, output_tokens=1), ValueError("bug"))
+    run(monkeypatch, client, ["first", "second"])
+    out = capsys.readouterr().out
+    assert out.count("[fake-model: 7 in / 1 out") == 1
+
+
+def test_interrupt_does_not_repeat_previous_usage_line(monkeypatch, capsys):
+    client = FakeClient(Reply(input_tokens=7, output_tokens=1), Reply(["Hel"], error=KeyboardInterrupt()))
+    run(monkeypatch, client, ["first", "second"])
+    out = capsys.readouterr().out
+    assert out.count("[fake-model: 7 in / 1 out") == 1
+
+
+def test_empty_reply_does_not_repeat_previous_usage_or_trim_lines(monkeypatch, capsys):
+    long = "x" * 4000
+    # Turn 2 trims; turn 3 is empty and must not print turn 2's lines again.
+    client = FakeClient(Reply([long]), Reply([long], input_tokens=3000, output_tokens=1004), Reply([]))
+    run(monkeypatch, client, ["a" + long, "b" + long, "c"], ["--max-history-tokens", "3000"])
+    captured = capsys.readouterr()
+    assert captured.out.count("[fake-model: 3000 in / 1004 out") == 1
+    assert captured.err.count("[history trimmed") == 1
+
+
+def test_empty_reply_prints_notice(monkeypatch, capsys):
+    client = FakeClient(Reply([]))
+    run(monkeypatch, client, ["hi"])
+    assert "[empty reply]" in capsys.readouterr().out
+
+
+def test_empty_chunk_inside_reply_is_not_an_empty_reply(monkeypatch, capsys):
+    client = FakeClient(Reply(["Hel", "", "lo"]))
+    run(monkeypatch, client, ["hi"])
+    out = capsys.readouterr().out
+    assert "Hello\n" in out
+    assert "[empty reply]" not in out
+
+
+def test_reply_of_only_empty_chunks_prints_notice(monkeypatch, capsys):
+    client = FakeClient(Reply(["", ""]))
+    run(monkeypatch, client, ["hi"])
+    assert "[empty reply]" in capsys.readouterr().out
+
+
+def test_whitespace_chunks_are_printed(monkeypatch, capsys):
+    # Models often stream spaces and line breaks as separate chunks.
+    client = FakeClient(Reply(["Hello", " ", "world", "\n\n", "Bye"]))
+    run(monkeypatch, client, ["hi"])
+    assert "Hello world\n\nBye\n" in capsys.readouterr().out

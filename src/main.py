@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 
 from chat.chat_client import ChatClient
@@ -8,6 +9,11 @@ from commands import Context, dispatch
 
 def _anthropic_client() -> ChatClient:
     from chat.anthropic_client import AnthropicClient
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("[error: No ANTHROPIC_API_KEY found]", file=sys.stderr)
+        sys.exit(1)
+
     return AnthropicClient()
 
 
@@ -45,10 +51,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     client = CLIENTS[args.client]()
+
     if args.model:
         client.set_model(args.model)
+
     if args.max_history_tokens:
         client.max_history_tokens = args.max_history_tokens
+
     ctx = Context(client=client)
     print(f"[{args.client}: {client.model}]")
 
@@ -66,11 +75,25 @@ def main(argv: list[str] | None = None) -> None:
                 break
         else:
             try:
+                got_text = False
                 for text in ctx.client.stream_chat(line):
+                    if text.strip():
+                        got_text = True
                     print(text, end="", flush=True)
+
             except LLMError as ex:
                 print(f"\n[error: {ex}]")
                 continue
+            except KeyboardInterrupt:
+                print("\n[interrupted]")
+                continue
+            except Exception as ex:
+                print(f"\n[unexpected error: {ex!r}]")
+                continue
+
+            if not got_text:
+                print("[empty reply]", end="")
+
             print()
             u = ctx.client.last_usage
             if u is not None:

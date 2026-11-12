@@ -1,4 +1,5 @@
 import os
+import httpx2
 
 from anthropic import Anthropic, APIError, APIStatusError, APIConnectionError
 
@@ -45,6 +46,10 @@ class AnthropicClient(ChatClient):
                     yield event.delta.text
         except APIError as ex:
             raise _to_llm_error(ex) from ex
+        except httpx2.TransportError as ex:
+            # Network failure while reading the stream; the SDK only wraps
+            # these while sending the request.
+            raise ConnectionFailed(f"Connection lost: {ex}") from ex
 
 
 def _to_llm_error(ex: APIError) -> LLMError:

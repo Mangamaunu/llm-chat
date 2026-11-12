@@ -56,11 +56,17 @@ class ChatClient(ABC):
             # Drop the unanswered user message so the history stays valid.
             self.messages.pop()
             raise
-        self.messages.append({"role": "assistant", "content": "".join(reply_parts)})
         self.usage.record(usage)
         self.last_usage = usage
-        self.history_tokens = usage.prompt_tokens + usage.output_tokens
-        self.last_trimmed = self._trim_history()
+        reply = "".join(reply_parts)
+        if reply.strip():
+            self.messages.append({"role": "assistant", "content": reply})
+            self.history_tokens = usage.prompt_tokens + usage.output_tokens
+            self.last_trimmed = self._trim_history()
+        else:
+            # Anthropic rejects empty assistant messages; drop the whole turn.
+            self.messages.pop()
+            self.last_trimmed = 0
 
     def _trim_history(self) -> int:
         """Removes the oldest turns if the history exceeds `max_history_tokens`. Returns the number of messages removed."""
