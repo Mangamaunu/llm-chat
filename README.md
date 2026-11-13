@@ -91,6 +91,7 @@ llm-chat --client openai --model gpt-5.4-mini
 |---|---|
 | `--client {anthropic,openai}` | Which API to use (default: `anthropic`) |
 | `--model MODEL` | Model to use instead of the client's default |
+| `--max-tokens N` | Maximum length of a reply in tokens (default: 4096) |
 | `--max-history-tokens N` | Trim old messages when the history exceeds N tokens (default: no limit) |
 | `-h`, `--help` | Show help |
 
@@ -113,8 +114,27 @@ Type these instead of a message:
 
 Reply text is printed as it arrives. Each finished turn (your message and the
 reply) is added to the history and sent with the next request. If a request
-fails, your unanswered message is removed so the history stays valid. Replies
-are limited to 1024 tokens.
+fails, your unanswered message is removed so the history stays valid. If you
+press Ctrl+C during a reply, the reply is dropped (`[interrupted]`) and the chat
+goes on. A reply with no text is not saved, and the app prints `[empty reply]`.
+
+### Reply length
+
+Replies are limited to 4096 tokens; change this with `--max-tokens N`. With
+reasoning models the limit also covers the model's reasoning, so a low limit
+can leave no room for the answer itself.
+
+When the model stops early, the app says why (on stderr):
+
+| Notice | Meaning |
+|---|---|
+| `[reply cut: reached the N-token limit, use --max-tokens to raise it]` | The reply hit the limit. The partial reply stays in the history, so you can ask the model to continue. |
+| `[reply cut: the model's context window is full, use /reset or --max-history-tokens]` | The conversation is too long for the model. |
+| `[the model declined to answer]` | The model refused, or the provider's content filter stopped the reply. |
+
+The OpenAI API calls the limit `max_completion_tokens`, while Ollama expects
+the older `max_tokens`. The app sends `max_tokens` when `OPENAI_BASE_URL`
+points at `localhost`, `127.0.0.1` or `::1`, and `max_completion_tokens` everywhere else.
 
 ### Retries
 

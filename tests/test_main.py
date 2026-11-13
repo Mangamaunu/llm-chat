@@ -236,3 +236,63 @@ def test_whitespace_chunks_are_printed(monkeypatch, capsys):
     client = FakeClient(Reply(["Hello", " ", "world", "\n\n", "Bye"]))
     run(monkeypatch, client, ["hi"])
     assert "Hello world\n\nBye\n" in capsys.readouterr().out
+
+
+# ---- --max-tokens and stop-reason notices ----
+
+def test_max_tokens_option_sets_client_limit(monkeypatch):
+    client = FakeClient()
+    run(monkeypatch, client, [], ["--max-tokens", "500"])
+    assert client.max_tokens == 500
+
+
+def test_without_max_tokens_option_default_is_kept(monkeypatch):
+    client = FakeClient()
+    run(monkeypatch, client, [])
+    assert client.max_tokens == 4096
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_invalid_max_tokens_exits(value):
+    with pytest.raises(SystemExit) as exc:
+        main.parse_args(["--max-tokens", value])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("stop_reason, notice", [
+    ("max_tokens", "[reply cut: reached the 300-token limit, use --max-tokens to raise it]"),
+    ("context_full", "[reply cut: the model's context window is full, use /reset or --max-history-tokens]"),
+    ("refusal", "[the model declined to answer]"),
+])
+def test_stop_reason_notice(monkeypatch, capsys, stop_reason, notice):
+    client = FakeClient(Reply(["partial"], stop_reason=stop_reason))
+    run(monkeypatch, client, ["hi"], ["--max-tokens", "300"])
+    assert notice in capsys.readouterr().err
+
+
+def test_normal_end_prints_no_notice(monkeypatch, capsys):
+    run(monkeypatch, FakeClient("done"), ["hi"])
+    err = capsys.readouterr().err
+    assert "[reply cut" not in err
+    assert "declined" not in err
+
+
+def test_empty_reply_cut_at_limit_shows_both_notices(monkeypatch, capsys):
+    # A reasoning model can spend the whole limit thinking and return no text.
+    client = FakeClient(Reply([], stop_reason="max_tokens"))
+    run(monkeypatch, client, ["hi"])
+    captured = capsys.readouterr()
+    assert "[empty reply]" in captured.out
+    assert "[reply cut: reached the 4096-token limit" in captured.err
+
+
+def test_cut_notice_is_not_repeated_after_error(monkeypatch, capsys):
+    client = FakeClient(Reply(["partial"], stop_reason="max_tokens"), BadRequest("bad"))
+    run(monkeypatch, client, ["first", "second"])
+    assert capsys.readouterr().err.count("[reply cut") == 1
+
+
+def test_unknown_stop_reason_does_not_crash(monkeypatch, capsys):
+    client = FakeClient(Reply(["ok"], stop_reason="something_new"), "second")
+    run(monkeypatch, client, ["first", "again"])
+    assert "second\n" in capsys.readouterr().out

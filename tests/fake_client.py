@@ -19,6 +19,7 @@ class Reply:
     chunks        text pieces yielded one by one
     input_tokens  None means "count it like a real API": system prompt + history
     error         raised after the chunks are yielded (a stream that breaks midway)
+    stop_reason   why the model stopped: None, "max_tokens", "context_full" or "refusal"
     """
     chunks: list[str] = field(default_factory=lambda: ["ok"])
     input_tokens: int | None = None
@@ -26,6 +27,7 @@ class Reply:
     cache_read: int = 0
     cache_write: int = 0
     error: BaseException | None = None
+    stop_reason: str | None = None
 
 
 class FakeClient(ChatClient):
@@ -66,6 +68,7 @@ class FakeClient(ChatClient):
             reply_parts.append(chunk)
             yield chunk
 
+        self.last_stop_reason = item.stop_reason
         if item.error is not None:
             raise item.error
         text = "".join(item.chunks)

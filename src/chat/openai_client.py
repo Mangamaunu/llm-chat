@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlparse
 
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APIStatusError
 
@@ -12,12 +13,19 @@ _OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "ollama")
 _OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "llama3.2")
 
 
+_OPENAI_FINISH_REASONS = {
+    "length": "max_tokens",
+    "content_filter": "refusal",
+}
+
+
 class OpenAiClient(ChatClient):
     # Ollama ignores the API key, but the OpenAI SDK requires one to be set.
     def __init__(self, base_url: str = _OPENAI_BASE_URL, api_key: str = _OPENAI_API_KEY):
         super().__init__()
         self._client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
         self.model = _OPENAI_MODEL
+        self._limit_param = "max_tokens" if _is_local(base_url) else "max_completion_tokens"
 
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         # The OpenAI API takes the system prompt as the first message.
@@ -29,7 +37,7 @@ class OpenAiClient(ChatClient):
             stream = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                max_tokens=1024,
+                **{self._limit_param: self.max_tokens},
                 stream=True,
                 stream_options={"include_usage": True},
             )
@@ -38,7 +46,11 @@ class OpenAiClient(ChatClient):
                 if chunk.usage is not None:
                     _apply_usage(usage, chunk.usage)
                 if chunk.choices:
-                    text = chunk.choices[0].delta.content
+                    choice = chunk.choices[0]
+                    if choice.finish_reason:
+                        self.last_stop_reason = _OPENAI_FINISH_REASONS.get(choice.finish_reason)
+
+                    text = choice.delta.content
                     if text:
                         reply_parts.append(text)
                         yield text
@@ -77,3 +89,9 @@ def _apply_usage(target: RequestUsage, source) -> None:
     target.cache_creation_input_tokens = written
     target.input_tokens = max(0, source.prompt_tokens - cached - written)
     target.output_tokens = source.completion_tokens
+
+
+def _is_local(base_url: str) -> bool:
+    """Ollama and other local servers still use the old parameter name."""
+    host = urlparse(base_url).hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1")

@@ -29,19 +29,25 @@ CLIENTS = {
 }
 
 
+_STOP_REASONS = {
+    "max_tokens":   lambda x: f"[reply cut: reached the {x}-token limit, use --max-tokens to raise it]",
+    "context_full": lambda _: "[reply cut: the model's context window is full, use /reset or --max-history-tokens]",
+    "refusal":      lambda _: "[the model declined to answer]",
+}
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="llm-chat", description="Chat with an LLM in the terminal.")
-    parser.add_argument(
-        "--client",
-        choices=CLIENTS,
-        default="anthropic",
-        help="which API to use (default: %(default)s)",
-    )
+    parser.add_argument("--client", choices=CLIENTS, default="anthropic", help="which API to use (default: %(default)s)")
     parser.add_argument("--model", help="model to use instead of the client's default")
-    parser.add_argument("--max-history-tokens", type=int, default=None, metavar="N",
-                        help="trim old messages when history exceeds N tokens")
+    parser.add_argument("--max-tokens", type=int, metavar="N", help="maximum length of a reply in tokens (default: 4096)")
+    parser.add_argument("--max-history-tokens", type=int, default=None, metavar="N", help="trim old messages when history exceeds N tokens")
 
     args = parser.parse_args(argv)
+
+    if args.max_tokens is not None and args.max_tokens <= 0:
+        parser.error("--max-tokens must be positive")
+
     if args.max_history_tokens is not None and args.max_history_tokens <= 0:
         parser.error("--max-history-tokens must be positive")
 
@@ -54,6 +60,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.model:
         client.set_model(args.model)
+
+    if args.max_tokens:
+        client.max_tokens = args.max_tokens
 
     if args.max_history_tokens:
         client.max_history_tokens = args.max_history_tokens
@@ -100,6 +109,11 @@ def main(argv: list[str] | None = None) -> None:
                 priced = ctx.client.usage.cost_of(u)
                 cost = f"${priced[0]:.6f}" if priced else "n/a"
                 print(f"[{u.model}: {u.input_tokens} in / {u.output_tokens} out, {cost}]")
+
+            if ctx.client.last_stop_reason:
+                formatter = _STOP_REASONS.get(ctx.client.last_stop_reason)
+                if formatter:
+                    print(formatter(ctx.client.max_tokens), file=sys.stderr, flush=True)
 
             if ctx.client.last_trimmed:
                 tokens = f"{ctx.client.history_tokens:,}".replace(",", " ")

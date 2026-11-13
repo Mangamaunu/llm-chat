@@ -266,3 +266,35 @@ def test_reply_without_visible_text_is_not_stored(chunks):
     client = FakeClient(Reply(chunks))
     chat(client, "hi")
     assert client.messages == []
+
+
+# ---- stop reason and reply limit ----
+
+def test_default_reply_limit():
+    assert FakeClient().max_tokens == 4096
+
+
+def test_stop_reason_of_finished_turn():
+    client = FakeClient(Reply(["cut"], stop_reason="max_tokens"))
+    chat(client, "hi")
+    assert client.last_stop_reason == "max_tokens"
+
+
+def test_stop_reason_resets_on_the_next_turn():
+    client = FakeClient(Reply(["cut"], stop_reason="max_tokens"), "full answer")
+    chat(client, "q1")
+    chat(client, "q2")
+    assert client.last_stop_reason is None
+
+
+def test_stop_reason_comes_from_the_successful_attempt(sleeps):
+    # The failed attempt reported max_tokens; the retry that succeeded did not.
+    client = FakeClient(Reply([], stop_reason="max_tokens", error=ServerError("cut")), "ok")
+    chat(client, "hi")
+    assert client.last_stop_reason is None
+
+
+def test_reply_cut_at_limit_is_kept_in_history():
+    client = FakeClient(Reply(["partial"], stop_reason="max_tokens"))
+    chat(client, "hi")
+    assert client.messages[-1] == {"role": "assistant", "content": "partial"}

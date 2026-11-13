@@ -19,6 +19,13 @@ _USAGE_FIELDS = (
 )
 
 
+_ANTHROPIC_STOP_REASONS = {
+    "max_tokens": "max_tokens",
+    "model_context_window_exceeded": "context_full",
+    "refusal": "refusal",
+}
+
+
 class AnthropicClient(ChatClient):
     def __init__(self):
         super().__init__()
@@ -28,7 +35,7 @@ class AnthropicClient(ChatClient):
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         try:
             stream = self._client.messages.create(
-                max_tokens=1024,
+                max_tokens=self.max_tokens,
                 system=self.system,
                 messages=self.messages,
                 model=self.model,
@@ -39,8 +46,8 @@ class AnthropicClient(ChatClient):
                 if event.type == "message_start":
                     _apply_usage(usage, event.message.usage)
                 elif event.type == "message_delta":
-                    # Counts here are cumulative, so they replace earlier values.
                     _apply_usage(usage, event.usage)
+                    self.last_stop_reason = _ANTHROPIC_STOP_REASONS.get(event.delta.stop_reason)
                 elif event.type == "content_block_delta" and event.delta.type == "text_delta":
                     reply_parts.append(event.delta.text)
                     yield event.delta.text

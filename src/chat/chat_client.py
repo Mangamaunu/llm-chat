@@ -10,6 +10,7 @@ class ChatClient(ABC):
     def __init__(self, max_retries: int = 5, retry_base_delay: float = 1.0, retry_max_delay: float = 30.0):
         self.model: str | None = None
         self.system = ""
+        self.max_tokens = 4096
         self.usage = UsageTracker()
         self.last_usage: RequestUsage | None = None
         self.messages = []
@@ -20,6 +21,7 @@ class ChatClient(ABC):
         self.trim_target_ratio: float = 0.5
         self.history_tokens: int = 0
         self.last_trimmed: int = 0
+        self.last_stop_reason: str | None = None
 
     def reset(self):
         self.messages.clear()
@@ -38,6 +40,7 @@ class ChatClient(ABC):
         try:
             while True:
                 usage = RequestUsage(model=self.model)
+                self.last_stop_reason = None
                 try:
                     yield from self._stream_once(usage, reply_parts)
                     break

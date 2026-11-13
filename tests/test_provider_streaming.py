@@ -60,8 +60,8 @@ def text_delta(text):
     return NS(type="content_block_delta", delta=NS(type="text_delta", text=text))
 
 
-def message_delta(output_tokens):
-    return NS(type="message_delta", usage=a_usage(output_tokens=output_tokens))
+def message_delta(output_tokens, stop_reason="end_turn"):
+    return NS(type="message_delta", usage=a_usage(output_tokens=output_tokens), delta=NS(stop_reason=stop_reason))
 
 
 @pytest.fixture
@@ -151,8 +151,8 @@ def test_anthropic_sdk_error_is_mapped(anthropic_client):
 
 # ---- OpenAI ----
 
-def chunk(text=None, usage=None):
-    choices = [NS(delta=NS(content=text))] if usage is None else []
+def chunk(text=None, usage=None, finish_reason=None):
+    choices = [NS(delta=NS(content=text), finish_reason=finish_reason)] if usage is None else []
     return NS(choices=choices, usage=usage)
 
 
@@ -194,3 +194,69 @@ def test_openai_without_system_prompt_sends_only_history(openai_client):
     stub = use_stub(openai_client, StubCreate(chunk("ok"), chunk(usage=o_usage(5, 1))))
     collect(openai_client, "hi")
     assert stub.calls[0]["messages"] == [{"role": "user", "content": "hi"}]
+
+
+# ---- reply limit and stop reason ----
+
+def test_anthropic_sends_reply_limit(anthropic_client):
+    stub = use_stub(anthropic_client, StubCreate(message_start(), text_delta("ok"), message_delta(1)))
+    anthropic_client.max_tokens = 777
+    collect(anthropic_client)
+    assert stub.calls[0]["max_tokens"] == 777
+
+
+@pytest.mark.parametrize("api_value, expected", [
+    ("end_turn", None),
+    ("stop_sequence", None),
+    ("max_tokens", "max_tokens"),
+    ("model_context_window_exceeded", "context_full"),
+    ("refusal", "refusal"),
+    (None, None),
+])
+def test_anthropic_stop_reason(anthropic_client, api_value, expected):
+    use_stub(anthropic_client, StubCreate(message_start(), text_delta("ok"), message_delta(5, stop_reason=api_value)))
+    collect(anthropic_client)
+    assert anthropic_client.last_stop_reason == expected
+
+
+def test_anthropic_message_delta_still_updates_usage(anthropic_client):
+    use_stub(anthropic_client, StubCreate(message_start(), text_delta("ok"), message_delta(42, stop_reason="max_tokens")))
+    collect(anthropic_client)
+    assert anthropic_client.last_usage.output_tokens == 42
+
+
+@pytest.mark.parametrize("api_value, expected", [
+    ("stop", None),
+    ("length", "max_tokens"),
+    ("content_filter", "refusal"),
+    ("tool_calls", None),
+])
+def test_openai_finish_reason(openai_client, api_value, expected):
+    use_stub(openai_client, StubCreate(chunk("ok"), chunk(None, finish_reason=api_value), chunk(usage=o_usage(5, 1))))
+    collect(openai_client)
+    assert openai_client.last_stop_reason == expected
+
+
+def test_openai_finish_reason_in_same_chunk_as_text(openai_client):
+    use_stub(openai_client, StubCreate(chunk("cut", finish_reason="length"), chunk(usage=o_usage(5, 1))))
+    texts, _ = collect(openai_client)
+    assert texts == ["cut"]
+    assert openai_client.last_stop_reason == "max_tokens"
+
+
+@pytest.mark.parametrize("base_url, param", [
+    ("http://localhost:11434/v1/", "max_tokens"),
+    ("http://127.0.0.1:11434/v1/", "max_tokens"),
+    ("http://[::1]:11434/v1/", "max_tokens"),
+    ("https://api.openai.com/v1", "max_completion_tokens"),
+    ("https://my-proxy.example.com/v1", "max_completion_tokens"),
+])
+def test_openai_limit_parameter_name(base_url, param):
+    client = OpenAiClient(base_url=base_url)
+    stub = use_stub(client, StubCreate(chunk("ok"), chunk(usage=o_usage(5, 1))))
+    client.max_tokens = 321
+    collect(client)
+    call = stub.calls[0]
+    assert call[param] == 321
+    other = "max_completion_tokens" if param == "max_tokens" else "max_tokens"
+    assert other not in call
