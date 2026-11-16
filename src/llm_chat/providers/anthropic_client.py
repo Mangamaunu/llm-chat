@@ -40,6 +40,7 @@ class AnthropicClient(ChatClient):
                 messages=self.messages,
                 model=self.model,
                 stream=True,
+                cache_control={"type": "ephemeral"},
             )
 
             for event in stream:

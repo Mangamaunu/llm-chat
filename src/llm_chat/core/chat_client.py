@@ -85,6 +85,12 @@ class ChatClient(ABC):
         if not self.max_history_tokens or self.history_tokens <= self.max_history_tokens:
             return 0
 
+        chars = len(self.system) + sum(len(m["content"]) for m in self.messages)
+        tokens_per_char = self.history_tokens / chars if chars else 0.25
+
+        def size(message: dict) -> int:
+            return round(len(message["content"]) * tokens_per_char)
+
         target = int(self.max_history_tokens * self.trim_target_ratio)
         dropped = 0
 
@@ -92,7 +98,7 @@ class ChatClient(ABC):
             assert self.messages[0]["role"] == "user"
             user_message = self.messages.pop(0)
             assistant_message = self.messages.pop(0)
-            self.history_tokens = max(0, self.history_tokens - estimate_tokens(user_message) - estimate_tokens(assistant_message))
+            self.history_tokens = max(0, self.history_tokens - size(user_message) - size(assistant_message))
             dropped += 2
 
         return dropped
@@ -100,7 +106,3 @@ class ChatClient(ABC):
     @abstractmethod
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         ...
-
-
-def estimate_tokens(message: dict) -> int:
-    return len(message["content"]) // 4 + 4 # ~4 chars per token in English; underestimates other languages.

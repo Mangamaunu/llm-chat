@@ -165,7 +165,12 @@ def main(argv: list[str] | None = None) -> None:
             if u is not None:
                 priced = ctx.client.usage.cost_of(u)
                 cost = f"${priced[0]:.6f}" if priced else "n/a"
-                print(f"[{u.model}: {u.input_tokens} in / {u.output_tokens} out, {cost}]")
+                tokens = f"{u.input_tokens} in"
+                if u.cache_read_input_tokens:
+                    tokens += f" + {u.cache_read_input_tokens:,} cached".replace(",", " ")
+                if u.cache_creation_input_tokens:
+                    tokens += f" + {u.cache_creation_input_tokens:,} cache write".replace(",", " ")
+                print(f"[{u.model}: {tokens} / {u.output_tokens} out, {cost}]")
 
             if ctx.client.last_stop_reason:
                 formatter = _STOP_REASONS.get(ctx.client.last_stop_reason)

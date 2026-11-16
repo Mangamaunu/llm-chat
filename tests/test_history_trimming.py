@@ -1,9 +1,8 @@
 """History trimming: drop the oldest turns when history grows past max_history_tokens."""
 import pytest
 
-from llm_chat.core.chat_client import estimate_tokens
 from llm_chat.core.error import BadRequest
-from fake_client import FakeClient, Reply, chat
+from fake_client import FakeClient, Reply, chat, estimate_tokens
 
 # 400 characters ≈ 104 estimated tokens per message, so one turn ≈ 208 tokens.
 LONG = "x" * 400
@@ -156,15 +155,17 @@ def test_system_prompt_survives_trimming():
     assert client.requests[-1]["system"] == "You are a pirate."
 
 
-def test_history_tokens_never_goes_negative():
-    # The API reports fewer tokens than the rough estimate of what is dropped.
-    # Here the API says 150 tokens, but the dropped turn alone is estimated at ~208.
+def test_kept_turn_gets_its_share_of_the_real_total():
+    # The API reports 150 tokens for 4 equally long messages. Two are dropped,
+    # so about half of the real total is left (the old fixed estimate subtracted
+    # ~208 here and had to be clamped at 0).
     client = FakeClient(Reply([LONG], input_tokens=5, output_tokens=5), Reply([LONG], input_tokens=150, output_tokens=0))
     client.max_history_tokens = 100
     chat(client, LONG)
     chat(client, LONG)
     assert client.last_trimmed == 2
-    assert client.history_tokens == 0
+    assert 0 <= client.history_tokens <= 150
+    assert abs(client.history_tokens - 75) <= 2
 
 
 # ---- interaction with failures and reset ----
@@ -201,3 +202,87 @@ def test_trimming_works_whenever_usage_arrives(usage_at_end):
         chat(client, f"question {i} " + LONG)
     assert client.last_trimmed == 6
     assert client.messages[0]["content"].startswith("question 3 ")
+
+
+# ---- size of dropped turns comes from the real token count (review M5) ----
+
+# (characters per token, limit): Russian-like text, English, and dense text such as long identifiers.
+LANGUAGES = [(1.5, 3000), (4, 1000), (8, 500)]
+
+
+def real_size(client: FakeClient) -> int:
+    """What the fake API would report for the current system prompt + history."""
+    size = sum(client.count(m["content"]) for m in client.messages)
+    return size + (client.count(client.system) if client.system else 0)
+
+
+def run_until_trim(client: FakeClient, max_turns: int = 20) -> None:
+    for i in range(max_turns):
+        client.queue(Reply([f"answer {i} " + LONG]))
+        chat(client, f"question {i} " + LONG)
+        if client.last_trimmed:
+            return
+    raise AssertionError("history was never trimmed")
+
+
+@pytest.mark.parametrize("chars_per_token, limit", LANGUAGES)
+def test_estimate_after_trim_matches_real_size(chars_per_token, limit):
+    client = FakeClient(chars_per_token=chars_per_token)
+    client.max_history_tokens = limit
+    run_until_trim(client)
+    real = real_size(client)
+    assert abs(client.history_tokens - real) <= real * 0.02 + 2
+
+
+@pytest.mark.parametrize("chars_per_token, limit", LANGUAGES)
+def test_trim_ends_below_target(chars_per_token, limit):
+    client = FakeClient(chars_per_token=chars_per_token)
+    client.max_history_tokens = limit
+    run_until_trim(client)
+    assert real_size(client) <= limit * client.trim_target_ratio
+
+
+@pytest.mark.parametrize("chars_per_token, limit", LANGUAGES)
+def test_trim_does_not_drop_more_than_needed(chars_per_token, limit):
+    # Putting back the most recently dropped turn would go over the target,
+    # so every dropped turn was needed.
+    client = FakeClient(chars_per_token=chars_per_token)
+    client.max_history_tokens = limit
+    run_until_trim(client)
+    one_turn = client.count("question 0 " + LONG) + client.count("answer 0 " + LONG)
+    assert real_size(client) + one_turn > limit * client.trim_target_ratio
+
+
+def test_russian_text_keeps_as_much_history_as_fits():
+    # ~556 tokens per turn, limit 3000, target 1500: two turns fit after a trim.
+    # The old fixed estimate (~4 chars per token) dropped all but the last turn.
+    client = FakeClient(chars_per_token=1.5)
+    client.max_history_tokens = 3000
+    run_until_trim(client)
+    assert len(client.messages) == 4
+
+
+def test_dense_text_is_not_trimmed_more_often_than_needed():
+    # With few tokens per character the old estimate subtracted too much, ended
+    # above the target and trimmed again two turns later.
+    client = FakeClient(chars_per_token=8)
+    client.max_history_tokens = 500
+    trims = []
+    for i in range(12):
+        client.queue(Reply([f"answer {i} " + LONG]))
+        chat(client, f"question {i} " + LONG)
+        if client.last_trimmed:
+            trims.append(i)
+    gaps = [b - a for a, b in zip(trims, trims[1:])]
+    assert gaps and min(gaps) >= 3
+
+
+def test_long_system_prompt_is_part_of_the_ratio():
+    client = FakeClient(chars_per_token=1.5)
+    client.set_system("Ты пират. " * 100)
+    client.max_history_tokens = 4000
+    run_until_trim(client)
+    real = real_size(client)
+    assert abs(client.history_tokens - real) <= real * 0.02 + 2
+    assert_valid_history(client.messages)
+    assert client.system == "Ты пират. " * 100

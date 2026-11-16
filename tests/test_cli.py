@@ -473,3 +473,39 @@ def test_missing_readline_is_fine(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "readline", None)  # makes `import readline` fail
     cli.enable_line_editing()
+
+
+# ---- cached tokens in the usage line (review M7) ----
+
+def test_usage_line_without_cache_is_unchanged(monkeypatch, capsys):
+    run(monkeypatch, FakeClient(Reply(input_tokens=120, output_tokens=50)), ["hi"])
+    out = capsys.readouterr().out
+    assert "[fake-model: 120 in / 50 out, $0.000220]" in out
+    assert "cache" not in out
+
+
+def test_usage_line_shows_cache_reads(monkeypatch, capsys):
+    # fake-model: input $1, cache read $0.1, output $2 per 1M tokens
+    client = FakeClient(Reply(input_tokens=120, output_tokens=50, cache_read=15_300))
+    run(monkeypatch, client, ["hi"])
+    assert "[fake-model: 120 in + 15 300 cached / 50 out, $0.001750]" in capsys.readouterr().out
+
+
+def test_usage_line_shows_cache_writes(monkeypatch, capsys):
+    # cache write $1.25 per 1M tokens
+    client = FakeClient(Reply(input_tokens=120, output_tokens=50, cache_write=900))
+    run(monkeypatch, client, ["hi"])
+    assert "[fake-model: 120 in + 900 cache write / 50 out, $0.001345]" in capsys.readouterr().out
+
+
+def test_usage_line_shows_cache_reads_and_writes(monkeypatch, capsys):
+    client = FakeClient(Reply(input_tokens=120, output_tokens=50, cache_read=15_300, cache_write=900))
+    run(monkeypatch, client, ["hi"])
+    assert "[fake-model: 120 in + 15 300 cached + 900 cache write / 50 out, $0.002875]" in capsys.readouterr().out
+
+
+def test_usage_line_shows_cache_tokens_for_unpriced_model(monkeypatch, capsys):
+    # Token counts are known even when the price isn't.
+    client = FakeClient(Reply(input_tokens=120, output_tokens=50, cache_read=15_300))
+    run(monkeypatch, client, ["hi"], ["--model", "unpriced-model"])
+    assert "[unpriced-model: 120 in + 15 300 cached / 50 out, n/a]" in capsys.readouterr().out

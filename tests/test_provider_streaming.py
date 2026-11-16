@@ -321,3 +321,27 @@ def test_openai_broken_stream_reports_no_tokens(openai_client):
     use_stub(openai_client, StubCreate(chunk("Hel"), openai.APIConnectionError(request=OPENAI_REQUEST)))
     collect(openai_client)
     assert openai_client.usage.by_model == {}
+
+
+# ---- prompt caching (review M7) ----
+
+def test_anthropic_requests_prompt_caching(anthropic_client):
+    stub = use_stub(anthropic_client, StubCreate(message_start(), text_delta("ok"), message_delta(1)))
+    collect(anthropic_client)
+    assert stub.calls[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_caching_on_every_request(anthropic_client):
+    stub = use_stub(anthropic_client, StubCreate(message_start(), text_delta("ok"), message_delta(1)))
+    collect(anthropic_client, "q1")
+    stub.items = (message_start(cache_read=500), text_delta("ok"), message_delta(1))
+    collect(anthropic_client, "q2")
+    assert [c["cache_control"] for c in stub.calls] == [{"type": "ephemeral"}] * 2
+    assert anthropic_client.last_usage.cache_read_input_tokens == 500
+
+
+def test_openai_does_not_send_cache_control(openai_client):
+    # OpenAI caches automatically; the parameter doesn't exist there.
+    stub = use_stub(openai_client, StubCreate(chunk("ok"), chunk(usage=o_usage(5, 1))))
+    collect(openai_client)
+    assert "cache_control" not in stub.calls[0]

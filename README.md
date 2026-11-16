@@ -198,15 +198,46 @@ Two limits mean trimming happens every few turns rather than on every turn.
 After trimming, the app prints a message such as
 `[history trimmed: dropped 6 old messages, ~9 800 tokens left]` to stderr.
 
-The size of each dropped message is estimated at about 4 characters per token,
-which undercounts non-English text. With Ollama, keep N below the model's
-context window (`num_ctx`): Ollama silently cuts longer prompts itself.
+The API only reports the size of the whole prompt, not of each message. To know
+how much a dropped message frees up, the app works out how many tokens per
+character this conversation uses (the real total divided by the number of
+characters) and applies that to the message. This works for any language:
+Russian text, for example, has two to three times more tokens per character
+than English.
+
+With Ollama, keep N below the model's context window (`num_ctx`): Ollama
+silently cuts longer prompts itself.
 
 ### Usage and cost
 
 After each reply the app prints the input and output tokens and the cost, for example
 `[claude-opus-5-5: 1204 in / 310 out, $0.011016]`. `/cost` shows session totals,
 including prompt-cache reads and writes and the money saved by caching.
+
+### Prompt caching
+
+Each request sends the whole conversation again. To avoid paying the full price
+for it every turn, requests to Claude ask Anthropic to cache the prompt
+(`cache_control`): the part that was already sent in the last 5 minutes is read
+from the cache at about a tenth of the input price, and only the new part is
+charged in full. Writing to the cache costs 1.25× the input price once. OpenAI
+caches long prompts automatically, so nothing is needed there.
+
+When part of the prompt came from the cache, the usage line says so:
+
+```
+[claude-opus-5-5: 120 in + 15 300 cached / 310 out, $0.009740]
+```
+
+- `in` is the new, uncached part of the prompt, at the full price.
+- `cached` was read from the cache, at the cache-read price.
+- `cache write` (when shown) was written to the cache for the next turns.
+
+Short prompts are not cached; each model has a minimum length. The cache only
+helps while the beginning of the prompt stays the same, so these start a new
+cache on the next request: changing the system prompt (`/system`), switching
+model (`/model`), `/reset`, and history trimming (`--max-history-tokens`), which
+removes the oldest messages. A pause of more than 5 minutes also ends the cache.
 
 Prices come from [`src/llm_chat/pricing.toml`](src/llm_chat/pricing.toml) in
 USD per 1M tokens; the file is installed together with the app. It also supports

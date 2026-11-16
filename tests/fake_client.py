@@ -1,7 +1,7 @@
 """A ChatClient that needs no network: it plays back a script of replies and errors."""
 from dataclasses import dataclass, field
 
-from llm_chat.core.chat_client import ChatClient, estimate_tokens
+from llm_chat.core.chat_client import ChatClient
 from llm_chat.core.usage import ModelPricing, Price, RequestUsage, UsageTracker
 
 FAKE_MODEL = "fake-model"
@@ -36,7 +36,11 @@ class Reply:
 
 
 class FakeClient(ChatClient):
-    def __init__(self, *script, **kwargs):
+    """chars_per_token: how the fake API counts tokens. 4 is typical for English;
+    Russian text has 2-3 times more tokens per character (about 1.5-2)."""
+
+    def __init__(self, *script, chars_per_token: float = 4.0, **kwargs):
+        self.chars_per_token = chars_per_token
         # Retries don't really wait: each requested delay is recorded in self.sleeps.
         self.sleeps: list[float] = []
         kwargs.setdefault("sleep", self.sleeps.append)
@@ -76,17 +80,27 @@ class FakeClient(ChatClient):
         if item.usage_at_end:
             self._set_input_usage(usage, item)
         text = "".join(item.chunks)
-        usage.output_tokens = estimate_tokens({"content": text}) if item.output_tokens is None else item.output_tokens
+        usage.output_tokens = self.count(text) if item.output_tokens is None else item.output_tokens
 
     def _set_input_usage(self, usage: RequestUsage, item: Reply) -> None:
-        prompt = sum(estimate_tokens(m) for m in self.messages)
+        prompt = sum(self.count(m["content"]) for m in self.messages)
         if self.system:
-            prompt += estimate_tokens({"content": self.system})
+            prompt += self.count(self.system)
         usage.input_tokens = prompt if item.input_tokens is None else item.input_tokens
         usage.cache_read_input_tokens = item.cache_read
         usage.cache_creation_input_tokens = item.cache_write
+
+    def count(self, text: str) -> int:
+        """Tokens the fake API reports for one message: its text plus ~4 tokens of overhead."""
+        return estimate_tokens({"content": text}, self.chars_per_token)
 
 
 def chat(client: ChatClient, content: str) -> str:
     """Run one turn to the end and return the full reply."""
     return "".join(client.stream_chat(content))
+
+
+def estimate_tokens(message: dict, chars_per_token: float = 4.0) -> int:
+    """A stand-in for a real tokenizer: chars_per_token characters per token,
+    plus 4 tokens for the role and message framing."""
+    return int(len(message["content"]) / chars_per_token) + 4
