@@ -1,8 +1,8 @@
 """A ChatClient that needs no network: it plays back a script of replies and errors."""
 from dataclasses import dataclass, field
 
-from chat.chat_client import ChatClient, estimate_tokens
-from usage import ModelPricing, Price, RequestUsage, UsageTracker
+from llm_chat.core.chat_client import ChatClient, estimate_tokens
+from llm_chat.core.usage import ModelPricing, Price, RequestUsage, UsageTracker
 
 FAKE_MODEL = "fake-model"
 
@@ -20,6 +20,10 @@ class Reply:
     input_tokens  None means "count it like a real API": system prompt + history
     error         raised after the chunks are yielded (a stream that breaks midway)
     stop_reason   why the model stopped: None, "max_tokens", "context_full" or "refusal"
+    usage_at_end  when the token counts arrive:
+                  False - before the text, like Anthropic (message_start)
+                  True  - after the text, like OpenAI (the last chunk). A stream that
+                          breaks midway then reports no tokens at all.
     """
     chunks: list[str] = field(default_factory=lambda: ["ok"])
     input_tokens: int | None = None
@@ -28,12 +32,14 @@ class Reply:
     cache_write: int = 0
     error: BaseException | None = None
     stop_reason: str | None = None
+    usage_at_end: bool = False
 
 
 class FakeClient(ChatClient):
     def __init__(self, *script, **kwargs):
-        # No real waiting between retries unless a test asks for it.
-        kwargs.setdefault("retry_base_delay", 0.0)
+        # Retries don't really wait: each requested delay is recorded in self.sleeps.
+        self.sleeps: list[float] = []
+        kwargs.setdefault("sleep", self.sleeps.append)
         super().__init__(**kwargs)
         self.model = FAKE_MODEL
         self.usage = UsageTracker(pricing=FAKE_PRICING)
@@ -57,12 +63,8 @@ class FakeClient(ChatClient):
         if isinstance(item, str):
             item = Reply([item])
 
-        prompt = sum(estimate_tokens(m) for m in self.messages)
-        if self.system:
-            prompt += estimate_tokens({"content": self.system})
-        usage.input_tokens = prompt if item.input_tokens is None else item.input_tokens
-        usage.cache_read_input_tokens = item.cache_read
-        usage.cache_creation_input_tokens = item.cache_write
+        if not item.usage_at_end:
+            self._set_input_usage(usage, item)
 
         for chunk in item.chunks:
             reply_parts.append(chunk)
@@ -71,8 +73,18 @@ class FakeClient(ChatClient):
         self.last_stop_reason = item.stop_reason
         if item.error is not None:
             raise item.error
+        if item.usage_at_end:
+            self._set_input_usage(usage, item)
         text = "".join(item.chunks)
         usage.output_tokens = estimate_tokens({"content": text}) if item.output_tokens is None else item.output_tokens
+
+    def _set_input_usage(self, usage: RequestUsage, item: Reply) -> None:
+        prompt = sum(estimate_tokens(m) for m in self.messages)
+        if self.system:
+            prompt += estimate_tokens({"content": self.system})
+        usage.input_tokens = prompt if item.input_tokens is None else item.input_tokens
+        usage.cache_read_input_tokens = item.cache_read
+        usage.cache_creation_input_tokens = item.cache_write
 
 
 def chat(client: ChatClient, content: str) -> str:

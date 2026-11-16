@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import retry
-from chat.error import BadRequest, ConnectionFailed, LLMError, Overloaded, RateLimited, ServerError, retry_after
+from llm_chat.core import retry
+from llm_chat.core.error import BadRequest, ConnectionFailed, LLMError, Overloaded, RateLimited, ServerError, retry_after
 
 
 @pytest.mark.parametrize("exc, expected", [

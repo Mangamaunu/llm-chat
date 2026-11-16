@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: pip install ".[dev]"
+      - name: Run tests
+        # The package is installed without -e, and `-o pythonpath=` stops pytest
+        # from importing src/ directly, so the tests run against the installed
+        # package. That also checks that pricing.toml is part of it.
+        run: python -m pytest -o pythonpath= --cov=llm_chat --cov-report=term-missing --cov-fail-under=95

@@ -39,7 +39,10 @@ source .venv/bin/activate
 pip install -e .            # or: pip install -e ".[dev]" to also get the test tools
 ```
 
-This installs the `llm-chat` command into the virtual environment.
+This installs the `llm-chat` command into the virtual environment. Editable
+mode (`-e`) is for working on the code; to just use the app, a normal install
+works too, for example `pipx install .` puts `llm-chat` on your PATH in its own
+environment. `python -m llm_chat` starts the app as well.
 
 ## Configuration
 
@@ -53,6 +56,7 @@ file, so export them in your shell.
 | `OPENAI_BASE_URL` | `http://localhost:11434/v1/` (Ollama) | `openai` |
 | `OPENAI_API_KEY` | `ollama` (Ollama ignores it) | `openai` |
 | `OPENAI_MODEL` | `llama3.2` | `openai` |
+| `LLM_CHAT_PRICING` | the bundled `pricing.toml` | both: path to your own prices file |
 
 `--model` on the command line takes precedence over `ANTHROPIC_MODEL` and `OPENAI_MODEL`.
 
@@ -102,11 +106,38 @@ Type these instead of a message:
 | Command | Description |
 |---|---|
 | `/help` | Show available commands |
+| `/system` | Show the current system prompt |
 | `/system <text>` | Set the system prompt |
+| `/system off` | Remove the system prompt |
+| `/model` | Show the current model |
 | `/model <name>` | Switch model for the next requests |
 | `/reset` | Clear the conversation history (the system prompt is kept) |
 | `/cost` | Show token usage and cost for this session, per model |
 | `/exit`, `/quit`, `/q` | Quit (Ctrl+D also works) |
+
+## Typing messages
+
+Arrow keys move the cursor, and up/down go through earlier inputs
+(this uses Python's `readline`; on Windows plain input is used).
+
+To send several lines at once, for example code, type `"""` on its own line,
+then the text, then `"""` again:
+
+```
+How can I help you today?
+"""
+... def add(a, b):
+...     return a + b
+... Why is this slow?
+... """
+```
+
+- Indentation and blank lines inside the block are kept.
+- Text before the opening `"""` is kept too: `Explain this: """` starts the
+  message with "Explain this:". The same works for commands:
+  `/system """` sets a multi-line system prompt.
+- A block is always sent as a message, even if its first line starts with `/`.
+- Ctrl+C inside a block cancels it; Ctrl+C at the normal prompt quits.
 
 ## How it works
 
@@ -150,7 +181,7 @@ waits at least that long. Each retry is reported on stderr, for example
 A reply that breaks after text was already shown is not retried, because that
 would print the text twice.
 
-Each SDK's errors are mapped to the app's own error types in `chat/error.py`,
+Each SDK's errors are mapped to the app's own error types in `core/error.py`,
 so the retry logic doesn't depend on either SDK.
 
 ### History trimming
@@ -177,43 +208,76 @@ After each reply the app prints the input and output tokens and the cost, for ex
 `[claude-opus-5-5: 1204 in / 310 out, $0.011016]`. `/cost` shows session totals,
 including prompt-cache reads and writes and the money saved by caching.
 
-Prices come from [`pricing.toml`](pricing.toml) in USD per 1M tokens. It also
-supports a higher price tier for long prompts. Models that aren't listed show
-`n/a`; local Ollama models are listed at $0. Prices change, so update the file when they do.
+Prices come from [`src/llm_chat/pricing.toml`](src/llm_chat/pricing.toml) in
+USD per 1M tokens; the file is installed together with the app. It also supports
+a higher price tier for long prompts. Models that aren't listed show `n/a`;
+local Ollama models are listed at $0.
+
+Prices change. To use your own prices without editing the installed file,
+point `LLM_CHAT_PRICING` at a copy:
+
+```bash
+cp src/llm_chat/pricing.toml ~/my-prices.toml   # then edit it
+export LLM_CHAT_PRICING=~/my-prices.toml
+```
+
+If the file is missing or broken, the app prints a warning at startup and keeps
+working; costs then show `n/a`.
 
 ## Project structure
 
 ```
-src/
-  main.py               command-line options and the chat loop
-  commands.py           /commands
-  retry.py              retry decisions and backoff delays
-  usage.py              token usage, pricing.toml, cost calculation
-  chat/
-    chat_client.py      ChatClient base class: history, retries, trimming
-    anthropic_client.py Anthropic SDK client
-    openai_client.py    OpenAI SDK client (also Ollama)
-    error.py            SDK-independent error types
-tests/                  unit tests (no network)
-pricing.toml            model prices
+src/llm_chat/
+  cli.py                  command-line options and the chat loop
+  commands.py             /commands
+  __main__.py             lets `python -m llm_chat` start the app
+  pricing.toml            model prices
+  core/                   provider-independent logic
+    chat_client.py        ChatClient base class: history, retries, trimming
+    error.py              SDK-independent error types
+    retry.py              retry decisions and backoff delays
+    usage.py              token usage, loading prices, cost calculation
+  providers/              one ChatClient per API SDK
+    anthropic_client.py   Anthropic SDK client
+    openai_client.py      OpenAI SDK client (also Ollama)
+tests/                    unit tests (no network)
+.github/workflows/        CI: runs the tests on every push
 ```
+
+`core/` doesn't import anything from `providers/` or `cli.py`, so the chat logic
+can be reused without the terminal or a particular SDK.
 
 ### Adding another API
 
 1. Subclass `ChatClient` and implement `_stream_once(usage, reply_parts)`. It
    sends `self.system` and `self.messages` and yields reply text. It also
    appends that text to `reply_parts` and fills in the token counts in `usage`.
-2. Convert the SDK's errors to the types in `chat/error.py`. The retry logic
+2. Convert the SDK's errors to the types in `core/error.py`. The retry logic
    decides what to retry from those types.
-3. Register the client in `CLIENTS` in `main.py`.
+3. Put it in `providers/` and register it in `CLIENTS` in `cli.py`.
+4. Add the SDK to `dependencies` in `pyproject.toml`, with an upper bound on
+   the major version.
 
 ## Tests
 
 ```bash
 pip install -e ".[dev]"
 python -m pytest
-python -m pytest --cov=src --cov-report=term-missing   # with coverage
+python -m pytest --cov=llm_chat --cov-report=term-missing   # with coverage
 ```
 
 The tests use `FakeClient` (`tests/fake_client.py`), a `ChatClient` that plays
-back scripted replies and errors, so no API key or network is needed.
+back scripted replies and errors, so no API key or network is needed. A reply
+can deliver its token counts before the text (like Anthropic) or after it (like
+OpenAI, `usage_at_end=True`). Retries don't really wait: the delays are
+recorded in `client.sleeps`. The real clients are tested with a stub in place
+of the SDK (`tests/test_provider_streaming.py`).
+
+GitHub Actions runs the tests on every push and pull request, on Python 3.12
+and 3.13 (`.github/workflows/tests.yml`). It installs the package without `-e`
+and fails if coverage drops below 95%. To run the same check locally:
+
+```bash
+pip install ".[dev]"
+python -m pytest -o pythonpath= --cov=llm_chat --cov-fail-under=95
+```

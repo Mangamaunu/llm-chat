@@ -3,38 +3,51 @@ import builtins
 
 import pytest
 
-import chat.chat_client
-import main
-from chat.error import BadRequest, ServerError
+from llm_chat import cli
+from llm_chat.core.error import BadRequest, ServerError
 from fake_client import FakeClient, Reply
 
 
-def run(monkeypatch, client: FakeClient, lines: list[str], argv: list[str] | None = None) -> None:
-    """Run main() with `client` and the given input lines; the input ends with EOF."""
-    monkeypatch.setitem(main.CLIENTS, "anthropic", lambda: client)
-    monkeypatch.setitem(main.CLIENTS, "openai", lambda: client)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+def fake_inputs(monkeypatch, lines: list) -> list[str]:
+    """Replace input() with the given lines. An exception in the list is raised
+    at that point (e.g. KeyboardInterrupt for Ctrl+C). After the last line: EOF.
+    Returns the list of prompts that were shown."""
     inputs = iter(lines)
+    prompts: list[str] = []
 
     def fake_input(prompt=""):
+        prompts.append(prompt)
         try:
-            return next(inputs)
+            item = next(inputs)
         except StopIteration:
             raise EOFError
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     monkeypatch.setattr(builtins, "input", fake_input)
-    main.main(argv or [])
+    return prompts
+
+
+def run(monkeypatch, client: FakeClient, lines: list, argv: list[str] | None = None) -> list[str]:
+    """Run main() with `client` and the given input lines; the input ends with EOF."""
+    monkeypatch.setitem(cli.CLIENTS, "anthropic", lambda: client)
+    monkeypatch.setitem(cli.CLIENTS, "openai", lambda: client)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    prompts = fake_inputs(monkeypatch, lines)
+    cli.main(argv or [])
+    return prompts
 
 
 # ---- parse_args ----
 
 def test_defaults():
-    args = main.parse_args([])
+    args = cli.parse_args([])
     assert (args.client, args.model, args.max_history_tokens) == ("anthropic", None, None)
 
 
 def test_all_options():
-    args = main.parse_args(["--client", "openai", "--model", "llama3.2", "--max-history-tokens", "400"])
+    args = cli.parse_args(["--client", "openai", "--model", "llama3.2", "--max-history-tokens", "400"])
     assert (args.client, args.model, args.max_history_tokens) == ("openai", "llama3.2", 400)
 
 
@@ -46,7 +59,7 @@ def test_all_options():
 ])
 def test_invalid_options_exit(argv):
     with pytest.raises(SystemExit) as exc:
-        main.parse_args(argv)
+        cli.parse_args(argv)
     assert exc.value.code == 2
 
 
@@ -129,7 +142,7 @@ def test_missing_anthropic_key_exits_with_message(monkeypatch, capsys):
     # Uses the real factory: the key check lives in _anthropic_client().
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(SystemExit) as exc:
-        main.main([])
+        cli.main([])
     assert exc.value.code == 1
     captured = capsys.readouterr()
     assert "ANTHROPIC_API_KEY" in captured.out + captured.err
@@ -138,7 +151,7 @@ def test_missing_anthropic_key_exits_with_message(monkeypatch, capsys):
 def test_openai_client_does_not_need_anthropic_key(monkeypatch, capsys):
     client = FakeClient("ok")
     inputs = iter(["hi"])
-    monkeypatch.setitem(main.CLIENTS, "openai", lambda: client)
+    monkeypatch.setitem(cli.CLIENTS, "openai", lambda: client)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     def fake_input(prompt=""):
@@ -148,7 +161,7 @@ def test_openai_client_does_not_need_anthropic_key(monkeypatch, capsys):
             raise EOFError
 
     monkeypatch.setattr(builtins, "input", fake_input)
-    main.main(["--client", "openai"])
+    cli.main(["--client", "openai"])
     assert "ok\n" in capsys.readouterr().out
 
 
@@ -170,8 +183,7 @@ def test_ctrl_c_while_waiting_to_retry_keeps_chat_running(monkeypatch, capsys):
     def interrupted_sleep(delay):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(chat.chat_client.time, "sleep", interrupted_sleep)
-    client = FakeClient(ServerError("down"), "ok")
+    client = FakeClient(ServerError("down"), "ok", sleep=interrupted_sleep)
     run(monkeypatch, client, ["first", "second"])
     out = capsys.readouterr().out
     assert "[interrupted]" in out
@@ -255,7 +267,7 @@ def test_without_max_tokens_option_default_is_kept(monkeypatch):
 @pytest.mark.parametrize("value", ["0", "-1", "abc"])
 def test_invalid_max_tokens_exits(value):
     with pytest.raises(SystemExit) as exc:
-        main.parse_args(["--max-tokens", value])
+        cli.parse_args(["--max-tokens", value])
     assert exc.value.code == 2
 
 
@@ -296,3 +308,168 @@ def test_unknown_stop_reason_does_not_crash(monkeypatch, capsys):
     client = FakeClient(Reply(["ok"], stop_reason="something_new"), "second")
     run(monkeypatch, client, ["first", "again"])
     assert "second\n" in capsys.readouterr().out
+
+
+# ---- prices file problems (H3) ----
+
+def test_prices_problem_prints_warning_and_chat_works(monkeypatch, capsys, tmp_path):
+    from llm_chat.core.usage import PRICING_ENV, UsageTracker
+
+    monkeypatch.setenv(PRICING_ENV, str(tmp_path / "nope.toml"))
+    client = FakeClient(Reply(input_tokens=5, output_tokens=1))
+    client.usage = UsageTracker()  # load from the (missing) file, like a real client
+    run(monkeypatch, client, ["hi"])
+    captured = capsys.readouterr()
+    assert "[warning: could not load prices from" in captured.err
+    assert "costs will show n/a]" in captured.err
+    assert "[fake-model: 5 in / 1 out, n/a]" in captured.out
+
+
+def test_no_warning_when_prices_load(monkeypatch, capsys):
+    run(monkeypatch, FakeClient(), [])
+    assert "[warning" not in capsys.readouterr().err
+
+
+def test_python_dash_m_runs_the_cli():
+    import subprocess
+    import sys
+
+    result = subprocess.run([sys.executable, "-m", "llm_chat", "--help"], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert "usage: llm-chat" in result.stdout
+
+
+# ---- client factories and `python -m llm_chat` ----
+
+def test_anthropic_factory_creates_anthropic_client(monkeypatch):
+    from llm_chat.providers.anthropic_client import AnthropicClient
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert isinstance(cli.CLIENTS["anthropic"](), AnthropicClient)
+
+
+def test_openai_factory_creates_openai_client():
+    from llm_chat.providers.openai_client import OpenAiClient
+
+    assert isinstance(cli.CLIENTS["openai"](), OpenAiClient)
+
+
+def test_package_main_module_calls_cli(monkeypatch, capsys):
+    import runpy
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["llm-chat", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("llm_chat", run_name="__main__")
+    assert exc.value.code == 0
+    assert "usage: llm-chat" in capsys.readouterr().out
+
+
+# ---- multi-line input and line editing (review L4) ----
+
+Q = '"""'
+
+
+def sent(client: FakeClient) -> list[str]:
+    """The user messages the client received, in order."""
+    return [r["messages"][-1]["content"] for r in client.requests]
+
+
+def test_multiline_block_is_sent_as_one_message(monkeypatch):
+    client = FakeClient("ok")
+    run(monkeypatch, client, [Q, "line one", "line two", Q])
+    assert sent(client) == ["line one\nline two"]
+
+
+def test_multiline_block_keeps_indentation_and_inner_blank_lines(monkeypatch):
+    client = FakeClient("ok")
+    run(monkeypatch, client, [Q, "", "def f():", "    return 1", "", "print(f())", "", Q])
+    assert sent(client) == ["def f():\n    return 1\n\nprint(f())"]
+
+
+def test_text_before_opening_quotes_is_kept(monkeypatch):
+    client = FakeClient("ok")
+    run(monkeypatch, client, [f"Explain this code: {Q}", "x = 1", Q])
+    assert sent(client) == ["Explain this code:\nx = 1"]
+
+
+def test_text_before_closing_quotes_is_kept(monkeypatch):
+    client = FakeClient("ok")
+    run(monkeypatch, client, [Q, "first", f"last{Q}"])
+    assert sent(client) == ["first\nlast"]
+
+
+def test_continuation_lines_get_their_own_prompt(monkeypatch):
+    prompts = run(monkeypatch, FakeClient("ok"), [Q, "a", Q])
+    assert prompts[1:3] == ["... ", "... "]
+
+
+def test_quotes_closed_on_the_same_line_are_plain_text(monkeypatch):
+    client = FakeClient("ok")
+    run(monkeypatch, client, [f"{Q}hi{Q}"])
+    assert sent(client) == [f"{Q}hi{Q}"]
+
+
+def test_quotes_in_the_middle_of_a_line_are_plain_text(monkeypatch):
+    client = FakeClient("ok")
+    run(monkeypatch, client, [f"what does {Q} mean in python?"])
+    assert sent(client) == [f"what does {Q} mean in python?"]
+
+
+def test_block_starting_with_slash_is_a_message_not_a_command(monkeypatch):
+    client = FakeClient("ok")
+    run(monkeypatch, client, [Q, "/usr/bin/python crashes, why?", Q])
+    assert sent(client) == ["/usr/bin/python crashes, why?"]
+
+
+def test_command_with_multiline_argument(monkeypatch):
+    client = FakeClient()
+    run(monkeypatch, client, [f"/system {Q}", "You are a pirate.", "Answer briefly.", Q])
+    assert client.system == "You are a pirate.\nAnswer briefly."
+    assert client.requests == []
+
+
+def test_empty_block_sends_nothing(monkeypatch):
+    client = FakeClient()
+    run(monkeypatch, client, [Q, "", "   ", Q])
+    assert client.requests == []
+
+
+def test_ctrl_c_inside_block_cancels_only_the_block(monkeypatch, capsys):
+    client = FakeClient("ok")
+    run(monkeypatch, client, [Q, "half a thought", KeyboardInterrupt(), "next question"])
+    assert "[cancelled]" in capsys.readouterr().out
+    assert sent(client) == ["next question"]
+
+
+def test_ctrl_d_inside_block_quits(monkeypatch):
+    client = FakeClient()
+    run(monkeypatch, client, [Q, "unfinished"])  # EOF follows
+    assert client.requests == []
+
+
+def test_ctrl_c_at_the_prompt_still_quits(monkeypatch):
+    client = FakeClient()
+    run(monkeypatch, client, [KeyboardInterrupt(), "never read"])
+    assert client.requests == []
+
+
+def test_single_line_input_is_still_stripped(monkeypatch):
+    client = FakeClient("ok")
+    run(monkeypatch, client, ["   hello   "])
+    assert sent(client) == ["hello"]
+
+
+def test_line_editing_is_enabled(monkeypatch):
+    import sys
+
+    monkeypatch.delitem(sys.modules, "readline", raising=False)
+    run(monkeypatch, FakeClient(), [])
+    assert "readline" in sys.modules
+
+
+def test_missing_readline_is_fine(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "readline", None)  # makes `import readline` fail
+    cli.enable_line_editing()

@@ -2,13 +2,13 @@ import argparse
 import os
 import sys
 
-from chat.chat_client import ChatClient
-from chat.error import LLMError
-from commands import Context, dispatch
+from .commands import Context, dispatch
+from .core.chat_client import ChatClient
+from .core.error import LLMError
 
 
 def _anthropic_client() -> ChatClient:
-    from chat.anthropic_client import AnthropicClient
+    from .providers.anthropic_client import AnthropicClient
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("[error: No ANTHROPIC_API_KEY found]", file=sys.stderr)
@@ -18,7 +18,7 @@ def _anthropic_client() -> ChatClient:
 
 
 def _openai_client() -> ChatClient:
-    from chat.openai_client import OpenAiClient
+    from .providers.openai_client import OpenAiClient
     return OpenAiClient()
 
 
@@ -34,6 +34,59 @@ _STOP_REASONS = {
     "context_full": lambda _: "[reply cut: the model's context window is full, use /reset or --max-history-tokens]",
     "refusal":      lambda _: "[the model declined to answer]",
 }
+
+
+BLOCK = '"""'
+
+
+def enable_line_editing() -> None:
+    """Arrow keys, line editing and input history for input().
+
+    Importing readline is all it takes. It isn't available on Windows; input()
+    still works there, just without editing.
+    """
+    try:
+        import readline  # noqa: F401
+    except ImportError:
+        pass
+
+
+def read_input(prompt: str) -> tuple[str, bool]:
+    """Read one message or command. Returns (text, is_command).
+
+    A line that ends with an unclosed \"\"\" starts a multi-line block, which ends at
+    the next line ending with \"\"\". Text before the opening quotes is kept, so
+    `/system \"\"\"` sets a multi-line system prompt. A block without such a prefix
+    is always a message, even if it starts with "/" (a file path, for example).
+
+    EOFError and KeyboardInterrupt from the first line are passed to the caller;
+    Ctrl+C inside a block only cancels the block.
+    """
+    line = input(prompt).strip()
+    if not (line.endswith(BLOCK) and line.count(BLOCK) % 2 == 1):
+        return line, line.startswith("/")
+
+    head = line[: -len(BLOCK)].strip()
+    lines = []
+    try:
+        while True:
+            part = input("... ")
+            if part.rstrip().endswith(BLOCK):
+                last = part.rstrip()[: -len(BLOCK)]
+                if last.strip():
+                    lines.append(last)
+                break
+            lines.append(part)
+    except KeyboardInterrupt:
+        print("\n[cancelled]")
+        return "", False
+
+    # Keep indentation inside the block (code); drop blank lines around it.
+    body = "\n".join(lines).strip("\n")
+    if not body.strip():
+        body = ""
+    text = f"{head}\n{body}" if head and body else head or body
+    return text, head.startswith("/")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -67,19 +120,23 @@ def main(argv: list[str] | None = None) -> None:
     if args.max_history_tokens:
         client.max_history_tokens = args.max_history_tokens
 
+    if client.usage.pricing_error:
+        print(f"[warning: {client.usage.pricing_error}; costs will show n/a]", file=sys.stderr)
+
+    enable_line_editing()
     ctx = Context(client=client)
     print(f"[{args.client}: {client.model}]")
 
     while True:
         try:
-            line = input("How can I help you today?\n").strip()
+            line, is_command = read_input("How can I help you today?\n")
         except (EOFError, KeyboardInterrupt):
             print()
             break
 
         if not line:
             continue
-        if line.startswith("/"):
+        if is_command:
             if not dispatch(ctx, line):
                 break
         else:
@@ -119,6 +176,3 @@ def main(argv: list[str] | None = None) -> None:
                 tokens = f"{ctx.client.history_tokens:,}".replace(",", " ")
                 print(f"[history trimmed: dropped {ctx.client.last_trimmed} old messages, ~{tokens} tokens left]", file=sys.stderr, flush=True)
 
-
-if __name__ == "__main__":
-    main()

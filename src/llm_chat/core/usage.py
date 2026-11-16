@@ -1,9 +1,12 @@
+import os
 import tomllib
 from dataclasses import dataclass
+from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 
-# pricing.toml lives in the project root, one level above src/.
-PRICING_FILE = Path(__file__).resolve().parent.parent / "pricing.toml"
+# Set this to a file path to use your own prices instead of the bundled pricing.toml.
+PRICING_ENV = "LLM_CHAT_PRICING"
 
 
 @dataclass(frozen=True)
@@ -31,7 +34,15 @@ class ModelPricing:
         return self.base
 
 
-def _parse_price(model: str, table: dict) -> Price:
+def pricing_source() -> Path | Traversable:
+    """The prices file: $LLM_CHAT_PRICING if set, else pricing.toml bundled in the package."""
+    override = os.environ.get(PRICING_ENV)
+    if override:
+        return Path(override)
+    return resources.files("llm_chat") / "pricing.toml"
+
+
+def _parse_price(file: str, model: str, table: dict) -> Price:
     try:
         return Price(
             input=float(table["input"]),
@@ -40,18 +51,19 @@ def _parse_price(model: str, table: dict) -> Price:
             cache_read=float(table["cache_read"]),
         )
     except KeyError as e:
-        raise ValueError(f"{PRICING_FILE.name}: model '{model}' is missing price '{e.args[0]}'") from None
+        raise ValueError(f"{file}: model '{model}' is missing price '{e.args[0]}'") from None
 
 
-def load_pricing(path: Path = PRICING_FILE) -> dict[str, ModelPricing]:
-    with open(path, "rb") as f:
+def load_pricing(source: Path | Traversable | None = None) -> dict[str, ModelPricing]:
+    source = pricing_source() if source is None else source
+    with source.open("rb") as f:
         data = tomllib.load(f)
     pricing = {}
     for model, table in data.get("models", {}).items():
         long_table = table.get("long_context")
         pricing[model] = ModelPricing(
-            base=_parse_price(model, table),
-            long_context=_parse_price(f"{model}.long_context", long_table) if long_table else None,
+            base=_parse_price(source.name, model, table),
+            long_context=_parse_price(source.name, f"{model}.long_context", long_table) if long_table else None,
             long_context_threshold=table.get("long_context_threshold"),
         )
     return pricing
@@ -96,7 +108,15 @@ class UsageTracker:
     """Accumulates token usage and cost for the current session, per model."""
 
     def __init__(self, pricing: dict[str, ModelPricing] | None = None):
-        self.pricing = load_pricing() if pricing is None else pricing
+        # Prices are optional: if the file can't be read, costs show "n/a" and chat still works.
+        self.pricing_error: str | None = None
+        if pricing is None:
+            try:
+                pricing = load_pricing()
+            except (OSError, ValueError, TypeError, AttributeError) as ex:
+                self.pricing_error = f"could not load prices from {pricing_source()}: {ex}"
+                pricing = {}
+        self.pricing = pricing
         self.by_model: dict[str, ModelUsage] = {}
 
     def cost_of(self, req: RequestUsage) -> tuple[float, float] | None:

@@ -3,9 +3,9 @@ from urllib.parse import urlparse
 
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APIStatusError
 
-from .chat_client import ChatClient
-from .error import LLMError, ConnectionFailed, RateLimited, BadRequest, ServerError, retry_after
-from usage import RequestUsage
+from ..core.chat_client import ChatClient
+from ..core.error import LLMError, ConnectionFailed, RateLimited, BadRequest, ServerError, retry_after
+from ..core.usage import RequestUsage
 
 # Defaults point at a local Ollama server, which serves an OpenAI-compatible API.
 _OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1/")

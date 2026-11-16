@@ -1,8 +1,8 @@
 """History trimming: drop the oldest turns when history grows past max_history_tokens."""
 import pytest
 
-from chat.chat_client import estimate_tokens
-from chat.error import BadRequest
+from llm_chat.core.chat_client import estimate_tokens
+from llm_chat.core.error import BadRequest
 from fake_client import FakeClient, Reply, chat
 
 # 400 characters ≈ 104 estimated tokens per message, so one turn ≈ 208 tokens.
@@ -190,3 +190,14 @@ def test_reset_after_trimming_starts_fresh():
     run_turns(client, 1)
     assert client.last_trimmed == 0
     assert len(client.messages) == 2
+
+
+@pytest.mark.parametrize("usage_at_end", [False, True])
+def test_trimming_works_whenever_usage_arrives(usage_at_end):
+    client = FakeClient()
+    client.max_history_tokens = 1000
+    for i in range(5):
+        client.queue(Reply([f"answer {i} " + LONG], usage_at_end=usage_at_end))
+        chat(client, f"question {i} " + LONG)
+    assert client.last_trimmed == 6
+    assert client.messages[0]["content"].startswith("question 3 ")

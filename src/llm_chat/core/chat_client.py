@@ -1,13 +1,20 @@
 import sys
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
-from retry import backoff_delay, is_retryable, describe
-from usage import RequestUsage, UsageTracker
+from .retry import backoff_delay, describe, is_retryable
+from .usage import RequestUsage, UsageTracker
 
 
 class ChatClient(ABC):
-    def __init__(self, max_retries: int = 5, retry_base_delay: float = 1.0, retry_max_delay: float = 30.0):
+    def __init__(
+        self,
+        max_retries: int = 5,
+        retry_base_delay: float = 1.0,
+        retry_max_delay: float = 30.0,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         self.model: str | None = None
         self.system = ""
         self.max_tokens = 4096
@@ -17,6 +24,8 @@ class ChatClient(ABC):
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self.retry_max_delay = retry_max_delay
+        # Waits between retries; tests pass their own function instead of really sleeping.
+        self.sleep = sleep
         self.max_history_tokens: int | None = None
         self.trim_target_ratio: float = 0.5
         self.history_tokens: int = 0
@@ -54,7 +63,7 @@ class ChatClient(ABC):
                     delay = backoff_delay(attempt, exc, self.retry_base_delay, self.retry_max_delay)
                     attempt += 1
                     print(f"[{describe(exc)}, retry {attempt}/{self.max_retries} in {delay:.1f}s]", file=sys.stderr, flush=True)
-                    time.sleep(delay)
+                    self.sleep(delay)
         except BaseException:
             # Drop the unanswered user message so the history stays valid.
             self.messages.pop()

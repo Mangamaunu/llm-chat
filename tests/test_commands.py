@@ -1,7 +1,7 @@
 """Slash commands, run against a FakeClient."""
 import pytest
 
-from commands import COMMANDS, Context, dispatch
+from llm_chat.commands import COMMANDS, Context, dispatch
 from fake_client import FAKE_MODEL, FakeClient, Reply, chat
 
 
@@ -41,10 +41,72 @@ def test_model_switches_model(ctx):
 def test_help_lists_each_command_once(ctx, capsys):
     dispatch(ctx, "/help")
     out = capsys.readouterr().out
-    names = {c.name for c in COMMANDS.values()}
-    for name in names:
-        assert out.count(f"/{name} ") == 1
+    listed = [line.split()[0] for line in out.splitlines() if line.startswith("  /")]
+    assert sorted(listed) == sorted({f"/{c.name}" for c in COMMANDS.values()})
     assert "/quit" not in out  # aliases are not listed separately
+
+
+def test_help_explains_multiline_input(ctx, capsys):
+    dispatch(ctx, "/help")
+    assert 'type """ on its own line' in capsys.readouterr().out
+
+
+# ---- /model and /system without and with arguments (review M8) ----
+
+def test_model_without_argument_shows_current_model(ctx, capsys):
+    assert dispatch(ctx, "/model") is True
+    assert capsys.readouterr().out == "Model: fake-model\n"
+    assert ctx.client.model == "fake-model"
+
+
+def test_model_with_argument_confirms(ctx, capsys):
+    dispatch(ctx, "/model other-model")
+    assert "Model set to other-model." in capsys.readouterr().out
+
+
+def test_model_with_only_spaces_does_not_clear_the_model(ctx):
+    dispatch(ctx, "/model    ")
+    assert ctx.client.model == "fake-model"
+
+
+def test_system_without_argument_when_none_is_set(ctx, capsys):
+    dispatch(ctx, "/system")
+    assert "No system prompt" in capsys.readouterr().out
+    assert ctx.client.system == ""
+
+
+def test_system_without_argument_does_not_clear_it(ctx, capsys):
+    ctx.client.set_system("You are a pirate.")
+    dispatch(ctx, "/system")
+    assert "You are a pirate." in capsys.readouterr().out
+    assert ctx.client.system == "You are a pirate."
+
+
+def test_system_with_argument_confirms(ctx, capsys):
+    dispatch(ctx, "/system be brief")
+    assert "System prompt set." in capsys.readouterr().out
+
+
+def test_system_off_clears_it(ctx, capsys):
+    ctx.client.set_system("You are a pirate.")
+    dispatch(ctx, "/system off")
+    assert ctx.client.system == ""
+    assert "System prompt cleared." in capsys.readouterr().out
+
+
+def test_system_prompt_may_contain_off(ctx):
+    dispatch(ctx, "/system switch the lights off")
+    assert ctx.client.system == "switch the lights off"
+
+
+def test_multiline_argument(ctx):
+    dispatch(ctx, "/system\nline one\n  line two")
+    assert ctx.client.system == "line one\n  line two"
+
+
+def test_bare_slash_is_unknown_command(ctx, capsys):
+    assert dispatch(ctx, "/") is True
+    assert "Unknown command: /." in capsys.readouterr().out
 
 
 def test_cost_without_requests(ctx, capsys):

@@ -1,7 +1,7 @@
 """stream_chat: history, usage and retries, tested through FakeClient."""
 import pytest
 
-from chat.error import BadRequest, ConnectionFailed, LLMError, Overloaded, RateLimited, ServerError
+from llm_chat.core.error import BadRequest, ConnectionFailed, LLMError, Overloaded, RateLimited, ServerError
 from fake_client import FAKE_MODEL, FakeClient, Reply, chat
 
 
@@ -120,54 +120,54 @@ def test_usage_accumulates_over_turns():
 # ---- retries ----
 
 @pytest.mark.parametrize("error", [RateLimited, Overloaded, ServerError, ConnectionFailed])
-def test_retryable_error_is_retried_then_succeeds(error, sleeps):
+def test_retryable_error_is_retried_then_succeeds(error):
     client = FakeClient(error("temporary"), "ok")
     assert chat(client, "hi") == "ok"
     assert len(client.requests) == 2
-    assert len(sleeps) == 1
+    assert len(client.sleeps) == 1
     assert client.messages[-1] == {"role": "assistant", "content": "ok"}
 
 
-def test_retry_resends_the_same_messages(sleeps):
+def test_retry_resends_the_same_messages():
     client = FakeClient(ServerError("boom"), "ok")
     chat(client, "hi")
     assert client.requests[0]["messages"] == client.requests[1]["messages"] == [{"role": "user", "content": "hi"}]
 
 
-def test_retry_prints_notice_to_stderr(sleeps, capsys):
+def test_retry_prints_notice_to_stderr(capsys):
     client = FakeClient(RateLimited("slow down"), "ok")
     chat(client, "hi")
     err = capsys.readouterr().err
     assert "[RateLimited, retry 1/5 in" in err
 
 
-def test_gives_up_after_max_retries(sleeps):
+def test_gives_up_after_max_retries():
     client = FakeClient(*[ServerError("down")] * 3, max_retries=2)
     with pytest.raises(ServerError):
         chat(client, "hi")
     assert len(client.requests) == 3  # first try + 2 retries
-    assert len(sleeps) == 2
+    assert len(client.sleeps) == 2
     assert client.messages == []
 
 
-def test_zero_max_retries_means_one_attempt(sleeps):
+def test_zero_max_retries_means_one_attempt():
     client = FakeClient(ServerError("down"), max_retries=0)
     with pytest.raises(ServerError):
         chat(client, "hi")
     assert len(client.requests) == 1
-    assert sleeps == []
+    assert client.sleeps == []
 
 
 @pytest.mark.parametrize("error", [BadRequest("bad"), LLMError("base"), ValueError("bug")])
-def test_non_retryable_error_is_raised_at_once(error, sleeps):
+def test_non_retryable_error_is_raised_at_once(error):
     client = FakeClient(error)
     with pytest.raises(type(error)):
         chat(client, "hi")
     assert len(client.requests) == 1
-    assert sleeps == []
+    assert client.sleeps == []
 
 
-def test_no_retry_once_text_was_shown(sleeps):
+def test_no_retry_once_text_was_shown():
     client = FakeClient(Reply(["Hel"], error=ServerError("cut")), "never used")
     received = []
     with pytest.raises(ServerError):
@@ -175,30 +175,30 @@ def test_no_retry_once_text_was_shown(sleeps):
             received.append(text)
     assert received == ["Hel"]
     assert len(client.requests) == 1
-    assert sleeps == []
+    assert client.sleeps == []
     assert client.messages == []
 
 
-def test_server_retry_after_sets_minimum_delay(sleeps):
+def test_server_retry_after_sets_minimum_delay():
     client = FakeClient(RateLimited("wait", retry_after=3), "ok")
     chat(client, "hi")
-    assert sleeps == [3]
+    assert client.sleeps == [3]
 
 
-def test_retry_after_is_capped_by_max_delay(sleeps):
+def test_retry_after_is_capped_by_max_delay():
     client = FakeClient(RateLimited("wait", retry_after=120), "ok", retry_max_delay=10)
     chat(client, "hi")
-    assert sleeps == [10]
+    assert client.sleeps == [10]
 
 
-def test_backoff_delay_stays_within_exponential_bounds(sleeps):
+def test_backoff_delay_stays_within_exponential_bounds():
     client = FakeClient(*[ServerError("down")] * 4, "ok", retry_base_delay=1.0, retry_max_delay=5.0)
     chat(client, "hi")
-    for attempt, delay in enumerate(sleeps):
+    for attempt, delay in enumerate(client.sleeps):
         assert 0 <= delay <= min(5.0, 2 ** attempt)
 
 
-def test_failed_attempt_with_tokens_is_still_billed(sleeps):
+def test_failed_attempt_with_tokens_is_still_billed():
     client = FakeClient(Reply([], input_tokens=50, error=ServerError("cut")), Reply(input_tokens=50, output_tokens=5))
     chat(client, "hi")
     mu = client.usage.by_model[FAKE_MODEL]
@@ -206,7 +206,7 @@ def test_failed_attempt_with_tokens_is_still_billed(sleeps):
     assert mu.input_tokens == 100
 
 
-def test_failed_attempt_without_tokens_is_not_recorded(sleeps):
+def test_failed_attempt_without_tokens_is_not_recorded():
     client = FakeClient(ServerError("refused"), Reply(input_tokens=50, output_tokens=5))
     chat(client, "hi")
     assert client.usage.by_model[FAKE_MODEL].requests == 1
@@ -241,7 +241,7 @@ def test_stopping_the_stream_early_removes_the_user_message():
     assert client.messages == []
 
 
-def test_keyboard_interrupt_is_not_retried(sleeps):
+def test_keyboard_interrupt_is_not_retried():
     client = FakeClient(KeyboardInterrupt(), "never used")
     with pytest.raises(KeyboardInterrupt):
         chat(client, "hi")
@@ -287,7 +287,7 @@ def test_stop_reason_resets_on_the_next_turn():
     assert client.last_stop_reason is None
 
 
-def test_stop_reason_comes_from_the_successful_attempt(sleeps):
+def test_stop_reason_comes_from_the_successful_attempt():
     # The failed attempt reported max_tokens; the retry that succeeded did not.
     client = FakeClient(Reply([], stop_reason="max_tokens", error=ServerError("cut")), "ok")
     chat(client, "hi")
@@ -298,3 +298,61 @@ def test_reply_cut_at_limit_is_kept_in_history():
     client = FakeClient(Reply(["partial"], stop_reason="max_tokens"))
     chat(client, "hi")
     assert client.messages[-1] == {"role": "assistant", "content": "partial"}
+
+
+# ---- retry waits are injectable ----
+
+def test_real_clients_sleep_with_time_sleep_by_default():
+    import inspect
+    import time
+
+    from llm_chat.core.chat_client import ChatClient
+
+    assert inspect.signature(ChatClient.__init__).parameters["sleep"].default is time.sleep
+
+
+def test_custom_sleep_receives_each_delay():
+    waits = []
+    client = FakeClient(ServerError("a"), ServerError("b"), "ok", sleep=waits.append)
+    chat(client, "hi")
+    assert len(waits) == 2
+
+
+# ---- usage reported after the text (OpenAI) vs before it (Anthropic) ----
+
+@pytest.mark.parametrize("usage_at_end", [False, True])
+def test_usage_is_the_same_whenever_it_arrives(usage_at_end):
+    client = FakeClient(Reply(["ok"], input_tokens=30, output_tokens=4, usage_at_end=usage_at_end))
+    chat(client, "hi")
+    u = client.last_usage
+    assert (u.input_tokens, u.output_tokens) == (30, 4)
+    assert client.history_tokens == 34
+    assert client.usage.by_model[FAKE_MODEL].requests == 1
+
+
+def test_stream_broken_before_text_with_usage_at_end_is_retried_and_not_billed():
+    # OpenAI sends usage in the last chunk, so a broken stream reports no tokens.
+    client = FakeClient(
+        Reply([], input_tokens=50, error=ServerError("cut"), usage_at_end=True),
+        Reply(["ok"], input_tokens=50, output_tokens=5, usage_at_end=True),
+    )
+    assert chat(client, "hi") == "ok"
+    mu = client.usage.by_model[FAKE_MODEL]
+    assert (mu.requests, mu.input_tokens) == (1, 50)  # only the attempt that finished
+
+
+def test_stream_broken_after_text_with_usage_at_end_records_nothing():
+    client = FakeClient(Reply(["Hel"], input_tokens=50, error=ServerError("cut"), usage_at_end=True))
+    with pytest.raises(ServerError):
+        chat(client, "hi")
+    assert client.usage.by_model == {}
+    assert client.last_usage is None
+    assert client.messages == []
+
+
+def test_stream_broken_after_text_with_usage_at_start_is_billed():
+    # Anthropic sends input tokens in message_start, before any text.
+    client = FakeClient(Reply(["Hel"], input_tokens=50, error=ServerError("cut")))
+    with pytest.raises(ServerError):
+        chat(client, "hi")
+    assert client.usage.by_model[FAKE_MODEL].input_tokens == 50

@@ -1,11 +1,11 @@
 import os
-import httpx2
 
+import httpx2
 from anthropic import Anthropic, APIError, APIStatusError, APIConnectionError
 
-from .chat_client import ChatClient
-from usage import RequestUsage
-from .error import LLMError, ConnectionFailed, RateLimited, BadRequest, Overloaded, ServerError, retry_after
+from ..core.chat_client import ChatClient
+from ..core.usage import RequestUsage
+from ..core.error import LLMError, ConnectionFailed, RateLimited, BadRequest, Overloaded, ServerError, retry_after
 
 _API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 _ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5-5")

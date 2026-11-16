@@ -1,6 +1,6 @@
 import random
 
-from chat.error import LLMError
+from .error import LLMError
 
 
 def is_retryable(ex: BaseException) -> bool:

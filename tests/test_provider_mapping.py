@@ -2,19 +2,19 @@
 from types import SimpleNamespace
 
 import anthropic
-import httpx
+import httpx2
 import openai
 import pytest
 
-from chat import anthropic_client, openai_client
-from chat.error import BadRequest, ConnectionFailed, Overloaded, RateLimited, ServerError
-from usage import RequestUsage
+from llm_chat.providers import anthropic_client, openai_client
+from llm_chat.core.error import BadRequest, ConnectionFailed, Overloaded, RateLimited, ServerError
+from llm_chat.core.usage import RequestUsage
 
-REQUEST = httpx.Request("POST", "https://example.invalid")
+REQUEST = httpx2.Request("POST", "https://example.invalid")
 
 
-def response(status: int, headers: dict | None = None) -> httpx.Response:
-    return httpx.Response(status, request=REQUEST, headers=headers or {})
+def response(status: int, headers: dict | None = None) -> httpx2.Response:
+    return httpx2.Response(status, request=REQUEST, headers=headers or {})
 
 
 def anthropic_status(status: int, error_type: str | None = None, headers: dict | None = None):

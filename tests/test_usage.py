@@ -1,7 +1,11 @@
 """Pricing file loading and cost calculation."""
+from importlib import resources
+
 import pytest
 
-from usage import ModelPricing, Price, RequestUsage, UsageTracker, load_pricing
+from llm_chat.core.usage import (
+    PRICING_ENV, ModelPricing, Price, RequestUsage, UsageTracker, load_pricing, pricing_source,
+)
 
 BASE = Price(input=1.0, output=2.0, cache_write=1.25, cache_read=0.1)
 LONG = Price(input=2.0, output=4.0, cache_write=2.5, cache_read=0.2)
@@ -82,8 +86,62 @@ def test_load_pricing_missing_price_names_model_and_field(tmp_path):
         load_pricing(f)
 
 
-def test_project_pricing_file_is_valid():
+def test_project_pricing_file_is_valid(monkeypatch):
+    monkeypatch.delenv(PRICING_ENV, raising=False)
     pricing = load_pricing()
     for model in ("claude-opus-5-5", "gpt-6.1-sol", "llama3.2", "gpt-oss:20b"):
         assert model in pricing
     assert pricing["llama3.2"].base == Price(0, 0, 0, 0)
+
+
+# ---- where prices come from (H3) ----
+
+VALID = "[models.m]\ninput = 1\noutput = 2\ncache_write = 3\ncache_read = 4\n"
+
+
+def test_prices_are_bundled_inside_the_package(monkeypatch):
+    monkeypatch.delenv(PRICING_ENV, raising=False)
+    source = pricing_source()
+    assert source == resources.files("llm_chat") / "pricing.toml"
+    assert source.is_file()
+
+
+def test_env_variable_overrides_bundled_prices(monkeypatch, tmp_path):
+    f = tmp_path / "my-prices.toml"
+    f.write_text(VALID)
+    monkeypatch.setenv(PRICING_ENV, str(f))
+    tracker = UsageTracker()
+    assert list(tracker.pricing) == ["m"]
+    assert tracker.pricing_error is None
+
+
+def test_missing_prices_file_does_not_crash(monkeypatch, tmp_path):
+    missing = tmp_path / "nope.toml"
+    monkeypatch.setenv(PRICING_ENV, str(missing))
+    tracker = UsageTracker()
+    assert tracker.pricing == {}
+    assert str(missing) in tracker.pricing_error
+    assert tracker.cost_of(RequestUsage("m", input_tokens=10)) is None
+
+
+@pytest.mark.parametrize("content", [
+    "this is not toml [",
+    "[models.m]\ninput = 1\n",                     # missing prices
+    '[models.m]\ninput = "free"\noutput = 2\ncache_write = 3\ncache_read = 4\n',  # not a number
+    "models = 5\n",                                 # wrong shape
+    "[models]\nm = 5\n",                            # model is not a table
+])
+def test_broken_prices_file_does_not_crash(monkeypatch, tmp_path, content):
+    f = tmp_path / "pricing.toml"
+    f.write_text(content)
+    monkeypatch.setenv(PRICING_ENV, str(f))
+    tracker = UsageTracker()
+    assert tracker.pricing == {}
+    assert tracker.pricing_error.startswith("could not load prices from")
+
+
+def test_explicit_pricing_skips_the_file(monkeypatch, tmp_path):
+    monkeypatch.setenv(PRICING_ENV, str(tmp_path / "nope.toml"))
+    tracker = UsageTracker(PRICING)
+    assert tracker.pricing is PRICING
+    assert tracker.pricing_error is None

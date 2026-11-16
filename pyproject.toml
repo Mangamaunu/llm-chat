@@ -1,27 +1,34 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-chat"
 version = "0.1.0"
+description = "Terminal chat app for Claude, OpenAI and local Ollama models"
+readme = "README.md"
 requires-python = ">=3.12"
+# Upper bounds stop a new major SDK version from breaking the app: the code
+# relies on SDK details (error bodies, stream event types, usage fields).
 dependencies = [
-    "anthropic",
-    "openai",
+    "anthropic>=2.3,<3",
+    "openai>=3.42,<4",
+    # Imported directly to catch network errors in the Anthropic stream.
+    # It comes with both SDKs; listed so the dependency is explicit.
+    "httpx2>=2.12,<3",
 ]
 
-[project.scripts]
-# `llm-chat` runs main() from src/main.py
-llm-chat = "main:main"
-
-[tool.setuptools]
-package-dir = { "" = "src" }
-py-modules = ["main", "commands", "retry", "usage"]
-packages = ["chat"]
-
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov"]
+dev = ["pytest>=8", "pytest-cov>=5"]
+
+[project.scripts]
+llm-chat = "llm_chat.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+llm_chat = ["pricing.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

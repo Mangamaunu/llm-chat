@@ -1,12 +1,14 @@
 """_stream_once of the real clients, with the SDK replaced by a stub (no network)."""
 from types import SimpleNamespace as NS
 
+import anthropic
 import httpx2
+import openai
 import pytest
 
-from chat.anthropic_client import AnthropicClient
-from chat.error import ConnectionFailed, RateLimited
-from chat.openai_client import OpenAiClient
+from llm_chat.core.error import BadRequest, ConnectionFailed, RateLimited
+from llm_chat.providers.anthropic_client import AnthropicClient
+from llm_chat.providers.openai_client import OpenAiClient
 
 
 class StubCreate:
@@ -65,10 +67,9 @@ def message_delta(output_tokens, stop_reason="end_turn"):
 
 
 @pytest.fixture
-def anthropic_client(monkeypatch):
+def anthropic_client():
     client = AnthropicClient()
-    client.retry_base_delay = 0
-    monkeypatch.setattr("chat.chat_client.time.sleep", lambda s: None)
+    client.sleep = lambda seconds: None
     return client
 
 
@@ -140,7 +141,6 @@ def test_anthropic_connection_lost_before_text_is_retried(anthropic_client):
 
 
 def test_anthropic_sdk_error_is_mapped(anthropic_client):
-    import anthropic
     response = httpx2.Response(429, request=httpx2.Request("POST", "https://example.invalid"))
     error = anthropic.APIStatusError("slow down", response=response, body=None)
     use_stub(anthropic_client, StubCreate(error))
@@ -163,7 +163,9 @@ def o_usage(prompt, completion, cached=None):
 
 @pytest.fixture
 def openai_client():
-    return OpenAiClient()
+    client = OpenAiClient()
+    client.sleep = lambda seconds: None
+    return client
 
 
 def test_openai_streams_text_and_usage(openai_client):
@@ -260,3 +262,62 @@ def test_openai_limit_parameter_name(base_url, param):
     assert call[param] == 321
     other = "max_completion_tokens" if param == "max_tokens" else "max_tokens"
     assert other not in call
+
+
+# ---- OpenAI SDK errors inside _stream_once ----
+
+OPENAI_REQUEST = httpx2.Request("POST", "https://example.invalid")
+
+
+def openai_status_error(cls, status):
+    return cls("msg", response=httpx2.Response(status, request=OPENAI_REQUEST), body=None)
+
+
+def test_openai_rate_limit_when_starting_the_stream(openai_client):
+    use_stub(openai_client, StubCreate(openai_status_error(openai.RateLimitError, 429)))
+    openai_client.max_retries = 0
+    _, error = collect(openai_client)
+    assert isinstance(error, RateLimited)
+    assert openai_client.messages == []
+
+
+def test_openai_rate_limit_is_retried(openai_client):
+    calls = 0
+
+    def create(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise openai_status_error(openai.RateLimitError, 429)
+        return StubCreate(chunk("ok"), chunk(usage=o_usage(5, 1)))(**kwargs)
+
+    use_stub(openai_client, create)
+    texts, error = collect(openai_client)
+    assert error is None
+    assert texts == ["ok"]
+    assert calls == 2
+
+
+def test_openai_connection_lost_mid_stream(openai_client):
+    # The OpenAI SDK wraps network errors while streaming in APIConnectionError.
+    use_stub(openai_client, StubCreate(chunk("Hel"), openai.APIConnectionError(request=OPENAI_REQUEST)))
+    texts, error = collect(openai_client)
+    assert texts == ["Hel"]
+    assert isinstance(error, ConnectionFailed)
+    assert openai_client.messages == []
+
+
+def test_openai_error_event_mid_stream(openai_client):
+    # An error sent inside the stream arrives as a plain APIError.
+    use_stub(openai_client, StubCreate(chunk("Hel"), openai.APIError("server said no", request=OPENAI_REQUEST, body=None)))
+    _, error = collect(openai_client)
+    assert isinstance(error, BadRequest)
+    assert "server said no" in str(error)
+    assert isinstance(error.__cause__, openai.APIError)
+
+
+def test_openai_broken_stream_reports_no_tokens(openai_client):
+    # Usage comes in the last chunk, so a stream that breaks records nothing (review L6).
+    use_stub(openai_client, StubCreate(chunk("Hel"), openai.APIConnectionError(request=OPENAI_REQUEST)))
+    collect(openai_client)
+    assert openai_client.usage.by_model == {}
