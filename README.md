@@ -264,7 +264,8 @@ src/llm_chat/
   __main__.py             lets `python -m llm_chat` start the app
   pricing.toml            model prices
   core/                   provider-independent logic
-    chat_client.py        ChatClient base class: history, retries, trimming
+    chat_client.py        ChatClient base class: one turn, retries, usage bookkeeping
+    conversation.py       Conversation: system prompt, history, history trimming
     error.py              SDK-independent error types
     retry.py              retry decisions and backoff delays
     usage.py              token usage, loading prices, cost calculation
@@ -276,16 +277,22 @@ tests/                    unit tests (no network)
 ```
 
 `core/` doesn't import anything from `providers/` or `cli.py`, so the chat logic
-can be reused without the terminal or a particular SDK.
+can be reused without the terminal or a particular SDK. It prints nothing and
+reads no environment variables: `cli.py` reads the settings, passes them to the
+client's constructor and sets `client.on_retry` to print the retry notices.
 
 ### Adding another API
 
 1. Subclass `ChatClient` and implement `_stream_once(usage, reply_parts)`. It
-   sends `self.system` and `self.messages` and yields reply text. It also
-   appends that text to `reply_parts` and fills in the token counts in `usage`.
+   sends `self.conversation.system` and `self.conversation.messages` and yields
+   reply text. It also appends that text to `reply_parts` and fills in the token
+   counts in `usage`. Take the API key, model and other settings as constructor
+   arguments and pass `**kwargs` on to `ChatClient.__init__`.
 2. Convert the SDK's errors to the types in `core/error.py`. The retry logic
    decides what to retry from those types.
-3. Put it in `providers/` and register it in `CLIENTS` in `cli.py`.
+3. Put it in `providers/`. In `cli.py`, add a factory that reads the
+   environment variables and creates the client (it gets the `--model` value or
+   `None`), and register it in `CLIENTS`.
 4. Add the SDK to `dependencies` in `pyproject.toml`, with an upper bound on
    the major version.
 
@@ -301,8 +308,11 @@ The tests use `FakeClient` (`tests/fake_client.py`), a `ChatClient` that plays
 back scripted replies and errors, so no API key or network is needed. A reply
 can deliver its token counts before the text (like Anthropic) or after it (like
 OpenAI, `usage_at_end=True`). Retries don't really wait: the delays are
-recorded in `client.sleeps`. The real clients are tested with a stub in place
-of the SDK (`tests/test_provider_streaming.py`).
+recorded in `client.sleeps`. It counts tokens like a real API, about
+`chars_per_token` characters per token (4 by default; 1.5 imitates Russian
+text). The trimming rules are tested on `Conversation` directly
+(`tests/test_conversation.py`), without a client. The real clients are tested
+with a stub in place of the SDK (`tests/test_provider_streaming.py`).
 
 GitHub Actions runs the tests on every push and pull request, on Python 3.12
 and 3.13 (`.github/workflows/tests.yml`). It installs the package without `-e`

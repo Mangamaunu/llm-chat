@@ -1,25 +1,41 @@
 import argparse
+import functools
 import os
 import sys
 
 from .commands import Context, dispatch
 from .core.chat_client import ChatClient
 from .core.error import LLMError
+from .core.retry import describe
 
 
-def _anthropic_client() -> ChatClient:
+ANTHROPIC_DEFAULT_MODEL = "claude-opus-5-5"
+# Defaults point at a local Ollama server, which serves an OpenAI-compatible API.
+OPENAI_DEFAULT_BASE_URL = "http://localhost:11434/v1/"
+OPENAI_DEFAULT_API_KEY = "ollama"  # Ollama ignores the key, but the OpenAI SDK requires one
+OPENAI_DEFAULT_MODEL = "llama3.2"
+
+
+def _anthropic_client(model: str | None = None) -> ChatClient:
     from .providers.anthropic_client import AnthropicClient
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
         print("[error: No ANTHROPIC_API_KEY found]", file=sys.stderr)
         sys.exit(1)
 
-    return AnthropicClient()
+    model = model or os.environ.get("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_MODEL)
+    return AnthropicClient(api_key=api_key, model=model)
 
 
-def _openai_client() -> ChatClient:
+def _openai_client(model: str | None = None) -> ChatClient:
     from .providers.openai_client import OpenAiClient
-    return OpenAiClient()
+
+    return OpenAiClient(
+        base_url=os.environ.get("OPENAI_BASE_URL", OPENAI_DEFAULT_BASE_URL),
+        api_key=os.environ.get("OPENAI_API_KEY", OPENAI_DEFAULT_API_KEY),
+        model=model or os.environ.get("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
+    )
 
 
 # --client value -> function that creates that client
@@ -49,6 +65,11 @@ def enable_line_editing() -> None:
         import readline  # noqa: F401
     except ImportError:
         pass
+
+
+def _print_retry(max_retries: int, attempt: int, delay: float, exc: Exception) -> None:
+    """Retry notice on stderr. main() binds max_retries, so ChatClient calls it with (attempt, delay, exc)."""
+    print(f"[{describe(exc)}, retry {attempt}/{max_retries} in {delay:.1f}s]", file=sys.stderr, flush=True)
 
 
 def read_input(prompt: str) -> tuple[str, bool]:
@@ -109,16 +130,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    client = CLIENTS[args.client]()
-
-    if args.model:
-        client.set_model(args.model)
+    client = CLIENTS[args.client](args.model)
+    client.on_retry = functools.partial(_print_retry, client.max_retries)
 
     if args.max_tokens:
         client.max_tokens = args.max_tokens
 
     if args.max_history_tokens:
-        client.max_history_tokens = args.max_history_tokens
+        client.conversation.max_history_tokens = args.max_history_tokens
 
     if client.usage.pricing_error:
         print(f"[warning: {client.usage.pricing_error}; costs will show n/a]", file=sys.stderr)
@@ -178,6 +197,6 @@ def main(argv: list[str] | None = None) -> None:
                     print(formatter(ctx.client.max_tokens), file=sys.stderr, flush=True)
 
             if ctx.client.last_trimmed:
-                tokens = f"{ctx.client.history_tokens:,}".replace(",", " ")
+                tokens = f"{ctx.client.conversation.history_tokens:,}".replace(",", " ")
                 print(f"[history trimmed: dropped {ctx.client.last_trimmed} old messages, ~{tokens} tokens left]", file=sys.stderr, flush=True)
 

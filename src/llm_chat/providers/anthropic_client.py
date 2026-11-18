@@ -1,14 +1,9 @@
-import os
-
 import httpx2
 from anthropic import Anthropic, APIError, APIStatusError, APIConnectionError
 
 from ..core.chat_client import ChatClient
 from ..core.usage import RequestUsage
 from ..core.error import LLMError, ConnectionFailed, RateLimited, BadRequest, Overloaded, ServerError, retry_after
-
-_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5-5")
 
 
 _USAGE_FIELDS = (
@@ -27,17 +22,17 @@ _ANTHROPIC_STOP_REASONS = {
 
 
 class AnthropicClient(ChatClient):
-    def __init__(self):
-        super().__init__()
-        self._client = Anthropic(api_key=_API_KEY, max_retries=0)
-        self.model = _ANTHROPIC_MODEL
+    def __init__(self, api_key: str, model: str, **kwargs):
+        super().__init__(**kwargs)
+        self._client = Anthropic(api_key=api_key, max_retries=0)
+        self.model = model
 
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         try:
             stream = self._client.messages.create(
                 max_tokens=self.max_tokens,
-                system=self.system,
-                messages=self.messages,
+                system=self.conversation.system,
+                messages=self.conversation.messages,
                 model=self.model,
                 stream=True,
                 cache_control={"type": "ephemeral"},

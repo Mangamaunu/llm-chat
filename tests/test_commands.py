@@ -24,13 +24,13 @@ def test_reset_clears_history(ctx, capsys):
     ctx.client.queue("ok")
     chat(ctx.client, "hi")
     assert dispatch(ctx, "/reset") is True
-    assert ctx.client.messages == []
+    assert ctx.client.conversation.messages == []
     assert "cleared" in capsys.readouterr().out
 
 
 def test_system_sets_prompt_with_spaces(ctx):
     dispatch(ctx, "/system   You are a pirate.  ")
-    assert ctx.client.system == "You are a pirate."
+    assert ctx.client.conversation.system == "You are a pirate."
 
 
 def test_model_switches_model(ctx):
@@ -72,14 +72,14 @@ def test_model_with_only_spaces_does_not_clear_the_model(ctx):
 def test_system_without_argument_when_none_is_set(ctx, capsys):
     dispatch(ctx, "/system")
     assert "No system prompt" in capsys.readouterr().out
-    assert ctx.client.system == ""
+    assert ctx.client.conversation.system == ""
 
 
 def test_system_without_argument_does_not_clear_it(ctx, capsys):
-    ctx.client.set_system("You are a pirate.")
+    ctx.client.conversation.system = "You are a pirate."
     dispatch(ctx, "/system")
     assert "You are a pirate." in capsys.readouterr().out
-    assert ctx.client.system == "You are a pirate."
+    assert ctx.client.conversation.system == "You are a pirate."
 
 
 def test_system_with_argument_confirms(ctx, capsys):
@@ -88,20 +88,20 @@ def test_system_with_argument_confirms(ctx, capsys):
 
 
 def test_system_off_clears_it(ctx, capsys):
-    ctx.client.set_system("You are a pirate.")
+    ctx.client.conversation.system = "You are a pirate."
     dispatch(ctx, "/system off")
-    assert ctx.client.system == ""
+    assert ctx.client.conversation.system == ""
     assert "System prompt cleared." in capsys.readouterr().out
 
 
 def test_system_prompt_may_contain_off(ctx):
     dispatch(ctx, "/system switch the lights off")
-    assert ctx.client.system == "switch the lights off"
+    assert ctx.client.conversation.system == "switch the lights off"
 
 
 def test_multiline_argument(ctx):
     dispatch(ctx, "/system\nline one\n  line two")
-    assert ctx.client.system == "line one\n  line two"
+    assert ctx.client.conversation.system == "line one\n  line two"
 
 
 def test_bare_slash_is_unknown_command(ctx, capsys):

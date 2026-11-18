@@ -1,9 +1,9 @@
-import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
-from .retry import backoff_delay, describe, is_retryable
+from .retry import backoff_delay, is_retryable
+from .conversation import Conversation
 from .usage import RequestUsage, UsageTracker
 
 
@@ -14,36 +14,27 @@ class ChatClient(ABC):
         retry_base_delay: float = 1.0,
         retry_max_delay: float = 30.0,
         sleep: Callable[[float], None] = time.sleep,
+        usage: UsageTracker | None = None,
+        on_retry: Callable[[int, float, Exception], None] | None = None,
+        conversation: Conversation | None = None,
     ):
         self.model: str | None = None
-        self.system = ""
         self.max_tokens = 4096
-        self.usage = UsageTracker()
+        self.conversation = conversation if conversation is not None else Conversation()
+        self.usage = usage if usage is not None else UsageTracker()
         self.last_usage: RequestUsage | None = None
-        self.messages = []
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self.retry_max_delay = retry_max_delay
+        # Called before each retry with (attempt, delay, error); the CLI prints a notice.
+        self.on_retry = on_retry
         # Waits between retries; tests pass their own function instead of really sleeping.
         self.sleep = sleep
-        self.max_history_tokens: int | None = None
-        self.trim_target_ratio: float = 0.5
-        self.history_tokens: int = 0
         self.last_trimmed: int = 0
         self.last_stop_reason: str | None = None
 
-    def reset(self):
-        self.messages.clear()
-        self.history_tokens = 0
-
-    def set_model(self, model):
-        self.model = model
-
-    def set_system(self, system):
-        self.system = system
-
     def stream_chat(self, content):
-        self.messages.append({"role": "user", "content": content})
+        self.conversation.add_user(content)
         reply_parts = []
         attempt = 0
         try:
@@ -62,46 +53,23 @@ class ChatClient(ABC):
                         raise
                     delay = backoff_delay(attempt, exc, self.retry_base_delay, self.retry_max_delay)
                     attempt += 1
-                    print(f"[{describe(exc)}, retry {attempt}/{self.max_retries} in {delay:.1f}s]", file=sys.stderr, flush=True)
+
+                    if self.on_retry:
+                        self.on_retry(attempt, delay, exc)
+
                     self.sleep(delay)
         except BaseException:
-            # Drop the unanswered user message so the history stays valid.
-            self.messages.pop()
+            self.conversation.drop_last_user()
             raise
         self.usage.record(usage)
         self.last_usage = usage
         reply = "".join(reply_parts)
         if reply.strip():
-            self.messages.append({"role": "assistant", "content": reply})
-            self.history_tokens = usage.prompt_tokens + usage.output_tokens
-            self.last_trimmed = self._trim_history()
+            self.last_trimmed = self.conversation.add_reply(reply, usage.prompt_tokens, usage.output_tokens)
         else:
             # Anthropic rejects empty assistant messages; drop the whole turn.
-            self.messages.pop()
+            self.conversation.drop_last_user()
             self.last_trimmed = 0
-
-    def _trim_history(self) -> int:
-        """Removes the oldest turns if the history exceeds `max_history_tokens`. Returns the number of messages removed."""
-        if not self.max_history_tokens or self.history_tokens <= self.max_history_tokens:
-            return 0
-
-        chars = len(self.system) + sum(len(m["content"]) for m in self.messages)
-        tokens_per_char = self.history_tokens / chars if chars else 0.25
-
-        def size(message: dict) -> int:
-            return round(len(message["content"]) * tokens_per_char)
-
-        target = int(self.max_history_tokens * self.trim_target_ratio)
-        dropped = 0
-
-        while self.history_tokens > target and len(self.messages) > 2:
-            assert self.messages[0]["role"] == "user"
-            user_message = self.messages.pop(0)
-            assistant_message = self.messages.pop(0)
-            self.history_tokens = max(0, self.history_tokens - size(user_message) - size(assistant_message))
-            dropped += 2
-
-        return dropped
 
     @abstractmethod
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):

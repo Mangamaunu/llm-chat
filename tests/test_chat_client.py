@@ -2,6 +2,7 @@
 import pytest
 
 from llm_chat.core.error import BadRequest, ConnectionFailed, LLMError, Overloaded, RateLimited, ServerError
+from llm_chat.core.usage import UsageTracker
 from fake_client import FAKE_MODEL, FakeClient, Reply, chat
 
 
@@ -15,7 +16,7 @@ def test_yields_chunks_in_order():
 def test_turn_adds_user_and_joined_assistant_message():
     client = FakeClient(Reply(["Hel", "lo"]))
     chat(client, "hi")
-    assert client.messages == [
+    assert client.conversation.messages == [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "Hello"},
     ]
@@ -34,15 +35,15 @@ def test_next_request_includes_previous_turns():
 
 def test_system_prompt_is_kept_out_of_messages():
     client = FakeClient("arr")
-    client.set_system("You are a pirate.")
+    client.conversation.system = "You are a pirate."
     chat(client, "hi")
     assert client.requests[0]["system"] == "You are a pirate."
-    assert all(m["role"] != "system" for m in client.messages)
+    assert all(m["role"] != "system" for m in client.conversation.messages)
 
 
-def test_set_model_is_used_for_the_next_request():
+def test_changed_model_is_used_for_the_next_request():
     client = FakeClient("ok")
-    client.set_model("other-model")
+    client.model = "other-model"
     chat(client, "hi")
     assert client.requests[0]["model"] == "other-model"
     assert client.last_usage.model == "other-model"
@@ -50,27 +51,27 @@ def test_set_model_is_used_for_the_next_request():
 
 def test_reset_clears_history_but_keeps_system_prompt():
     client = FakeClient("ok")
-    client.set_system("sys")
+    client.conversation.system = "sys"
     chat(client, "hi")
-    client.reset()
-    assert client.messages == []
-    assert client.history_tokens == 0
-    assert client.system == "sys"
+    client.conversation.reset()
+    assert client.conversation.messages == []
+    assert client.conversation.history_tokens == 0
+    assert client.conversation.system == "sys"
 
 
 def test_empty_reply_is_not_stored():
     # Anthropic rejects empty assistant messages, so one would break every later request.
     client = FakeClient(Reply([]))
     assert chat(client, "hi") == ""
-    assert client.messages == []
+    assert client.conversation.messages == []
 
 
 def test_empty_reply_keeps_earlier_history():
     client = FakeClient("first", Reply([]))
     chat(client, "q1")
-    before = list(client.messages)
+    before = list(client.conversation.messages)
     chat(client, "q2")
-    assert client.messages == before
+    assert client.conversation.messages == before
 
 
 def test_chat_continues_normally_after_empty_reply():
@@ -102,7 +103,7 @@ def test_successful_turn_sets_last_usage_and_records_it():
 def test_history_tokens_is_whole_prompt_plus_reply():
     client = FakeClient(Reply(["ok"], input_tokens=100, output_tokens=20, cache_read=300, cache_write=50))
     chat(client, "hi")
-    assert client.history_tokens == 100 + 300 + 50 + 20
+    assert client.conversation.history_tokens == 100 + 300 + 50 + 20
 
 
 def test_usage_accumulates_over_turns():
@@ -125,7 +126,7 @@ def test_retryable_error_is_retried_then_succeeds(error):
     assert chat(client, "hi") == "ok"
     assert len(client.requests) == 2
     assert len(client.sleeps) == 1
-    assert client.messages[-1] == {"role": "assistant", "content": "ok"}
+    assert client.conversation.messages[-1] == {"role": "assistant", "content": "ok"}
 
 
 def test_retry_resends_the_same_messages():
@@ -134,11 +135,28 @@ def test_retry_resends_the_same_messages():
     assert client.requests[0]["messages"] == client.requests[1]["messages"] == [{"role": "user", "content": "hi"}]
 
 
-def test_retry_prints_notice_to_stderr(capsys):
+def test_on_retry_is_called_once_per_retry():
+    calls = []
+    client = FakeClient(RateLimited("slow"), ServerError("boom"), "ok",
+                        on_retry=lambda attempt, delay, exc: calls.append((attempt, delay, type(exc))))
+    chat(client, "hi")
+    assert [(a, e) for a, _, e in calls] == [(1, RateLimited), (2, ServerError)]
+    assert [d for _, d, _ in calls] == client.sleeps
+
+
+def test_retry_without_callback_prints_nothing(capsys):
     client = FakeClient(RateLimited("slow down"), "ok")
     chat(client, "hi")
-    err = capsys.readouterr().err
-    assert "[RateLimited, retry 1/5 in" in err
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+def test_usage_tracker_can_be_passed_in():
+    tracker = UsageTracker(pricing={})
+    client = FakeClient("ok", usage=tracker)
+    chat(client, "hi")
+    assert client.usage is tracker
+    assert tracker.by_model[FAKE_MODEL].requests == 1
 
 
 def test_gives_up_after_max_retries():
@@ -147,7 +165,7 @@ def test_gives_up_after_max_retries():
         chat(client, "hi")
     assert len(client.requests) == 3  # first try + 2 retries
     assert len(client.sleeps) == 2
-    assert client.messages == []
+    assert client.conversation.messages == []
 
 
 def test_zero_max_retries_means_one_attempt():
@@ -176,7 +194,7 @@ def test_no_retry_once_text_was_shown():
     assert received == ["Hel"]
     assert len(client.requests) == 1
     assert client.sleeps == []
-    assert client.messages == []
+    assert client.conversation.messages == []
 
 
 def test_server_retry_after_sets_minimum_delay():
@@ -217,20 +235,20 @@ def test_failed_attempt_without_tokens_is_not_recorded():
 def test_failure_removes_only_the_unanswered_user_message():
     client = FakeClient("first", BadRequest("bad"))
     chat(client, "q1")
-    before = list(client.messages)
+    before = list(client.conversation.messages)
     with pytest.raises(BadRequest):
         chat(client, "q2")
-    assert client.messages == before
+    assert client.conversation.messages == before
 
 
 def test_failure_keeps_previous_last_usage_and_history_tokens():
     client = FakeClient(Reply(input_tokens=40, output_tokens=4), BadRequest("bad"))
     chat(client, "q1")
-    last_usage, history_tokens = client.last_usage, client.history_tokens
+    last_usage, history_tokens = client.last_usage, client.conversation.history_tokens
     with pytest.raises(BadRequest):
         chat(client, "q2")
     assert client.last_usage is last_usage
-    assert client.history_tokens == history_tokens
+    assert client.conversation.history_tokens == history_tokens
 
 
 def test_stopping_the_stream_early_removes_the_user_message():
@@ -238,7 +256,7 @@ def test_stopping_the_stream_early_removes_the_user_message():
     stream = client.stream_chat("hi")
     next(stream)
     stream.close()
-    assert client.messages == []
+    assert client.conversation.messages == []
 
 
 def test_keyboard_interrupt_is_not_retried():
@@ -246,7 +264,7 @@ def test_keyboard_interrupt_is_not_retried():
     with pytest.raises(KeyboardInterrupt):
         chat(client, "hi")
     assert len(client.requests) == 1
-    assert client.messages == []
+    assert client.conversation.messages == []
 
 
 def test_can_chat_again_after_a_failure():
@@ -254,7 +272,7 @@ def test_can_chat_again_after_a_failure():
     with pytest.raises(BadRequest):
         chat(client, "q1")
     assert chat(client, "q2") == "ok"
-    assert client.messages == [
+    assert client.conversation.messages == [
         {"role": "user", "content": "q2"},
         {"role": "assistant", "content": "ok"},
     ]
@@ -265,7 +283,7 @@ def test_reply_without_visible_text_is_not_stored(chunks):
     # Anthropic rejects assistant messages that are empty or only whitespace.
     client = FakeClient(Reply(chunks))
     chat(client, "hi")
-    assert client.messages == []
+    assert client.conversation.messages == []
 
 
 # ---- stop reason and reply limit ----
@@ -297,7 +315,7 @@ def test_stop_reason_comes_from_the_successful_attempt():
 def test_reply_cut_at_limit_is_kept_in_history():
     client = FakeClient(Reply(["partial"], stop_reason="max_tokens"))
     chat(client, "hi")
-    assert client.messages[-1] == {"role": "assistant", "content": "partial"}
+    assert client.conversation.messages[-1] == {"role": "assistant", "content": "partial"}
 
 
 # ---- retry waits are injectable ----
@@ -326,7 +344,7 @@ def test_usage_is_the_same_whenever_it_arrives(usage_at_end):
     chat(client, "hi")
     u = client.last_usage
     assert (u.input_tokens, u.output_tokens) == (30, 4)
-    assert client.history_tokens == 34
+    assert client.conversation.history_tokens == 34
     assert client.usage.by_model[FAKE_MODEL].requests == 1
 
 
@@ -347,7 +365,7 @@ def test_stream_broken_after_text_with_usage_at_end_records_nothing():
         chat(client, "hi")
     assert client.usage.by_model == {}
     assert client.last_usage is None
-    assert client.messages == []
+    assert client.conversation.messages == []
 
 
 def test_stream_broken_after_text_with_usage_at_start_is_billed():

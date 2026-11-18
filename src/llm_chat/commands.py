@@ -52,7 +52,7 @@ def _exit(ctx: Context, args: str) -> bool:
 
 @command("reset", "Clear conversation history")
 def _reset(ctx: Context, args: str) -> bool:
-    ctx.client.reset()
+    ctx.client.conversation.reset()
     print("Conversation history cleared.")
     return True
 
@@ -69,7 +69,7 @@ def _help(ctx: Context, args: str) -> bool:
 @command("model", "Show the model, or switch to another: /model <name>")
 def _model(ctx: Context, args: str) -> bool:
     if args:
-        ctx.client.set_model(args)
+        ctx.client.model = args
         print(f"Model set to {args}.")
     else:
         print(f"Model: {ctx.client.model}")
@@ -79,13 +79,13 @@ def _model(ctx: Context, args: str) -> bool:
 @command("system", "Show the system prompt, set it: /system <text>, or clear it: /system off")
 def _system(ctx: Context, args: str) -> bool:
     if args == "off":
-        ctx.client.set_system("")
+        ctx.client.conversation.system = ""
         print("System prompt cleared.")
     elif args:
-        ctx.client.set_system(args)
+        ctx.client.conversation.system = args
         print("System prompt set.")
-    elif ctx.client.system:
-        print(f"System prompt:\n{ctx.client.system}")
+    elif ctx.client.conversation.system:
+        print(f"System prompt:\n{ctx.client.conversation.system}")
     else:
         print("No system prompt. Set one with /system <text>.")
     return True

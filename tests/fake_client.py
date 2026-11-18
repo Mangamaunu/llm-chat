@@ -44,9 +44,9 @@ class FakeClient(ChatClient):
         # Retries don't really wait: each requested delay is recorded in self.sleeps.
         self.sleeps: list[float] = []
         kwargs.setdefault("sleep", self.sleeps.append)
+        kwargs.setdefault("usage", UsageTracker(pricing=FAKE_PRICING))
         super().__init__(**kwargs)
         self.model = FAKE_MODEL
-        self.usage = UsageTracker(pricing=FAKE_PRICING)
         self.script: list = list(script)
         self.requests: list[dict] = []  # what each _stream_once call was sent
 
@@ -56,8 +56,8 @@ class FakeClient(ChatClient):
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         self.requests.append({
             "model": self.model,
-            "system": self.system,
-            "messages": [dict(m) for m in self.messages],
+            "system": self.conversation.system,
+            "messages": [dict(m) for m in self.conversation.messages],
         })
         if not self.script:
             raise AssertionError("FakeClient script is empty: the test made more requests than expected")
@@ -83,9 +83,9 @@ class FakeClient(ChatClient):
         usage.output_tokens = self.count(text) if item.output_tokens is None else item.output_tokens
 
     def _set_input_usage(self, usage: RequestUsage, item: Reply) -> None:
-        prompt = sum(self.count(m["content"]) for m in self.messages)
-        if self.system:
-            prompt += self.count(self.system)
+        prompt = sum(self.count(m["content"]) for m in self.conversation.messages)
+        if self.conversation.system:
+            prompt += self.count(self.conversation.system)
         usage.input_tokens = prompt if item.input_tokens is None else item.input_tokens
         usage.cache_read_input_tokens = item.cache_read
         usage.cache_creation_input_tokens = item.cache_write

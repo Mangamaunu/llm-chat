@@ -29,10 +29,19 @@ def fake_inputs(monkeypatch, lines: list) -> list[str]:
     return prompts
 
 
+def factory(client: FakeClient):
+    """A CLIENTS entry that returns `client`, applying --model like the real factories."""
+    def make(model=None):
+        if model:
+            client.model = model
+        return client
+    return make
+
+
 def run(monkeypatch, client: FakeClient, lines: list, argv: list[str] | None = None) -> list[str]:
     """Run main() with `client` and the given input lines; the input ends with EOF."""
-    monkeypatch.setitem(cli.CLIENTS, "anthropic", lambda: client)
-    monkeypatch.setitem(cli.CLIENTS, "openai", lambda: client)
+    monkeypatch.setitem(cli.CLIENTS, "anthropic", factory(client))
+    monkeypatch.setitem(cli.CLIENTS, "openai", factory(client))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     prompts = fake_inputs(monkeypatch, lines)
     cli.main(argv or [])
@@ -74,7 +83,7 @@ def test_options_are_applied_to_client(monkeypatch):
     client = FakeClient()
     run(monkeypatch, client, [], ["--model", "m2", "--max-history-tokens", "500"])
     assert client.model == "m2"
-    assert client.max_history_tokens == 500
+    assert client.conversation.max_history_tokens == 500
 
 
 def test_reply_and_usage_line(monkeypatch, capsys):
@@ -100,7 +109,7 @@ def test_empty_lines_are_skipped(monkeypatch):
 def test_commands_are_dispatched(monkeypatch):
     client = FakeClient()
     run(monkeypatch, client, ["/system be brief"])
-    assert client.system == "be brief"
+    assert client.conversation.system == "be brief"
     assert client.requests == []
 
 
@@ -151,7 +160,7 @@ def test_missing_anthropic_key_exits_with_message(monkeypatch, capsys):
 def test_openai_client_does_not_need_anthropic_key(monkeypatch, capsys):
     client = FakeClient("ok")
     inputs = iter(["hi"])
-    monkeypatch.setitem(cli.CLIENTS, "openai", lambda: client)
+    monkeypatch.setitem(cli.CLIENTS, "openai", factory(client))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     def fake_input(prompt=""):
@@ -173,7 +182,7 @@ def test_ctrl_c_during_reply_keeps_chat_running(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "[interrupted]" in out
     assert "ok\n" in out
-    assert client.messages == [
+    assert client.conversation.messages == [
         {"role": "user", "content": "second"},
         {"role": "assistant", "content": "ok"},
     ]
@@ -196,7 +205,7 @@ def test_unexpected_error_is_shown_and_loop_continues(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "[unexpected error: ValueError('bug')]" in out
     assert "ok\n" in out
-    assert client.messages[0] == {"role": "user", "content": "second"}
+    assert client.conversation.messages[0] == {"role": "user", "content": "second"}
 
 
 def test_unexpected_error_does_not_repeat_previous_usage_line(monkeypatch, capsys):
@@ -316,8 +325,8 @@ def test_prices_problem_prints_warning_and_chat_works(monkeypatch, capsys, tmp_p
     from llm_chat.core.usage import PRICING_ENV, UsageTracker
 
     monkeypatch.setenv(PRICING_ENV, str(tmp_path / "nope.toml"))
-    client = FakeClient(Reply(input_tokens=5, output_tokens=1))
-    client.usage = UsageTracker()  # load from the (missing) file, like a real client
+    # UsageTracker() loads from the (missing) file, like a real client.
+    client = FakeClient(Reply(input_tokens=5, output_tokens=1), usage=UsageTracker())
     run(monkeypatch, client, ["hi"])
     captured = capsys.readouterr()
     assert "[warning: could not load prices from" in captured.err
@@ -352,6 +361,59 @@ def test_openai_factory_creates_openai_client():
     from llm_chat.providers.openai_client import OpenAiClient
 
     assert isinstance(cli.CLIENTS["openai"](), OpenAiClient)
+
+
+# Set after the modules were imported: the environment is read when the client is created.
+
+def test_anthropic_model_from_environment(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-env")
+    assert cli.CLIENTS["anthropic"]().model == "claude-env"
+
+
+def test_anthropic_default_model(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    assert cli.CLIENTS["anthropic"]().model == cli.ANTHROPIC_DEFAULT_MODEL
+
+
+def test_openai_settings_from_environment(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-env")
+    client = cli.CLIENTS["openai"]()
+    assert client.model == "gpt-env"
+    assert str(client._client.base_url) == "https://api.example.com/v1/"
+    assert client._client.api_key == "sk-env"
+    assert client._limit_param == "max_completion_tokens"
+
+
+def test_openai_defaults_point_at_ollama(monkeypatch):
+    for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    client = cli.CLIENTS["openai"]()
+    assert client.model == cli.OPENAI_DEFAULT_MODEL
+    assert str(client._client.base_url) == cli.OPENAI_DEFAULT_BASE_URL
+    assert client._limit_param == "max_tokens"
+
+
+@pytest.mark.parametrize("name, env", [("anthropic", "ANTHROPIC_MODEL"), ("openai", "OPENAI_MODEL")])
+def test_model_option_wins_over_environment(monkeypatch, name, env):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv(env, "from-env")
+    assert cli.CLIENTS[name]("from-option").model == "from-option"
+
+
+# ---- retry notice ----
+
+def test_retry_prints_notice_to_stderr(monkeypatch, capsys):
+    from llm_chat.core.error import RateLimited
+
+    client = FakeClient(RateLimited("slow down"), "ok", max_retries=3)
+    run(monkeypatch, client, ["hi"])
+    captured = capsys.readouterr()
+    assert "[RateLimited, retry 1/3 in" in captured.err
+    assert "ok\n" in captured.out
 
 
 def test_package_main_module_calls_cli(monkeypatch, capsys):
@@ -425,7 +487,7 @@ def test_block_starting_with_slash_is_a_message_not_a_command(monkeypatch):
 def test_command_with_multiline_argument(monkeypatch):
     client = FakeClient()
     run(monkeypatch, client, [f"/system {Q}", "You are a pirate.", "Answer briefly.", Q])
-    assert client.system == "You are a pirate.\nAnswer briefly."
+    assert client.conversation.system == "You are a pirate.\nAnswer briefly."
     assert client.requests == []
 
 

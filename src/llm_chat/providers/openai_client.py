@@ -1,4 +1,3 @@
-import os
 from urllib.parse import urlparse
 
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APIStatusError
@@ -6,11 +5,6 @@ from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APIStat
 from ..core.chat_client import ChatClient
 from ..core.error import LLMError, ConnectionFailed, RateLimited, BadRequest, ServerError, retry_after
 from ..core.usage import RequestUsage
-
-# Defaults point at a local Ollama server, which serves an OpenAI-compatible API.
-_OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1/")
-_OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "ollama")
-_OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "llama3.2")
 
 
 _OPENAI_FINISH_REASONS = {
@@ -21,17 +15,18 @@ _OPENAI_FINISH_REASONS = {
 
 class OpenAiClient(ChatClient):
     # Ollama ignores the API key, but the OpenAI SDK requires one to be set.
-    def __init__(self, base_url: str = _OPENAI_BASE_URL, api_key: str = _OPENAI_API_KEY):
-        super().__init__()
+    def __init__(self, base_url: str, api_key: str, model: str, **kwargs):
+        super().__init__(**kwargs)
         self._client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
-        self.model = _OPENAI_MODEL
+        self.model = model
         self._limit_param = "max_tokens" if _is_local(base_url) else "max_completion_tokens"
 
     def _stream_once(self, usage: RequestUsage, reply_parts: list[str]):
         # The OpenAI API takes the system prompt as the first message.
-        messages = self.messages
-        if self.system:
-            messages = [{"role": "system", "content": self.system}, *messages]
+        conversation = self.conversation
+        messages = conversation.messages
+        if conversation.system:
+            messages = [{"role": "system", "content": conversation.system}, *messages]
 
         try:
             stream = self._client.chat.completions.create(

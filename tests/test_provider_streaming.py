@@ -68,7 +68,7 @@ def message_delta(output_tokens, stop_reason="end_turn"):
 
 @pytest.fixture
 def anthropic_client():
-    client = AnthropicClient()
+    client = AnthropicClient(api_key="test", model="m")
     client.sleep = lambda seconds: None
     return client
 
@@ -96,13 +96,13 @@ def test_anthropic_streams_text_and_usage(anthropic_client):
     assert texts == ["Hel", "lo"]
     u = anthropic_client.last_usage
     assert (u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens) == (12, 7, 100, 20)
-    assert anthropic_client.messages[-1] == {"role": "assistant", "content": "Hello"}
+    assert anthropic_client.conversation.messages[-1] == {"role": "assistant", "content": "Hello"}
     assert stub.calls[0]["stream"] is True
 
 
 def test_anthropic_sends_system_and_history_separately(anthropic_client):
     stub = use_stub(anthropic_client, StubCreate(message_start(), text_delta("ok"), message_delta(1)))
-    anthropic_client.set_system("be brief")
+    anthropic_client.conversation.system = "be brief"
     collect(anthropic_client, "hi")
     call = stub.calls[0]
     assert call["system"] == "be brief"
@@ -120,7 +120,7 @@ def test_anthropic_connection_lost_mid_stream_becomes_connection_failed(anthropi
     texts, error = collect(anthropic_client)
     assert texts == ["Hel"]
     assert isinstance(error, ConnectionFailed)
-    assert anthropic_client.messages == []
+    assert anthropic_client.conversation.messages == []
 
 
 def test_anthropic_connection_lost_before_text_is_retried(anthropic_client):
@@ -163,7 +163,7 @@ def o_usage(prompt, completion, cached=None):
 
 @pytest.fixture
 def openai_client():
-    client = OpenAiClient()
+    client = OpenAiClient(base_url="http://localhost:11434/v1/", api_key="test", model="m")
     client.sleep = lambda seconds: None
     return client
 
@@ -183,13 +183,13 @@ def test_openai_streams_text_and_usage(openai_client):
 
 def test_openai_puts_system_prompt_first_without_storing_it(openai_client):
     stub = use_stub(openai_client, StubCreate(chunk("ok"), chunk(usage=o_usage(5, 1))))
-    openai_client.set_system("be brief")
+    openai_client.conversation.system = "be brief"
     collect(openai_client, "hi")
     assert stub.calls[0]["messages"] == [
         {"role": "system", "content": "be brief"},
         {"role": "user", "content": "hi"},
     ]
-    assert all(m["role"] != "system" for m in openai_client.messages)
+    assert all(m["role"] != "system" for m in openai_client.conversation.messages)
 
 
 def test_openai_without_system_prompt_sends_only_history(openai_client):
@@ -254,7 +254,7 @@ def test_openai_finish_reason_in_same_chunk_as_text(openai_client):
     ("https://my-proxy.example.com/v1", "max_completion_tokens"),
 ])
 def test_openai_limit_parameter_name(base_url, param):
-    client = OpenAiClient(base_url=base_url)
+    client = OpenAiClient(base_url=base_url, api_key="test", model="m")
     stub = use_stub(client, StubCreate(chunk("ok"), chunk(usage=o_usage(5, 1))))
     client.max_tokens = 321
     collect(client)
@@ -278,7 +278,7 @@ def test_openai_rate_limit_when_starting_the_stream(openai_client):
     openai_client.max_retries = 0
     _, error = collect(openai_client)
     assert isinstance(error, RateLimited)
-    assert openai_client.messages == []
+    assert openai_client.conversation.messages == []
 
 
 def test_openai_rate_limit_is_retried(openai_client):
@@ -304,7 +304,7 @@ def test_openai_connection_lost_mid_stream(openai_client):
     texts, error = collect(openai_client)
     assert texts == ["Hel"]
     assert isinstance(error, ConnectionFailed)
-    assert openai_client.messages == []
+    assert openai_client.conversation.messages == []
 
 
 def test_openai_error_event_mid_stream(openai_client):
