@@ -390,10 +390,10 @@ every run started with a clean context. The table shows the median of the 5 runs
 
 Model: `llama3:8b` (local).
 
-| Prompt | Response | Correct Response |
-|---|---|------------------|
+| Prompt | Response from model                    | Correct Response |
+|---|----------------------------------------|------------------|
 | `Count "r" in "strawberry"` | The word "strawberry" contains 2 "r"s. | 3 "r"s           |
-| `Reverse the string "Barcelona"` | The reversed string is "Onalcerab". | "anolecraB"      |
+| `Reverse the string "Barcelona"` | The reversed string is "Onalcerab".    | "anolecraB"      |
 
 **Conclusion.** Models see tokens, not words or letters. This is why they often fail at spelling or counting tasks.
 For both cases the model gives wrong answers with full confidence.
