@@ -571,3 +571,34 @@ def test_usage_line_shows_cache_tokens_for_unpriced_model(monkeypatch, capsys):
     client = FakeClient(Reply(input_tokens=120, output_tokens=50, cache_read=15_300))
     run(monkeypatch, client, ["hi"], ["--model", "unpriced-model"])
     assert "[unpriced-model: 120 in + 15 300 cached / 50 out, n/a]" in capsys.readouterr().out
+
+
+# ---- TTFT, speed and total time ----
+
+def fake_clock(monkeypatch, *values: float) -> None:
+    """Make time.perf_counter() return `values` one by one."""
+    times = iter(values)
+    monkeypatch.setattr(cli.time, "perf_counter", lambda: next(times))
+
+
+def test_prints_ttft_speed_and_total(monkeypatch, capsys):
+    # perf_counter() is called three times: start, first text, end.
+    fake_clock(monkeypatch, 10.0, 10.5, 12.5)
+    client = FakeClient(Reply(["Hello"], output_tokens=100))
+    run(monkeypatch, client, ["hi"])
+    assert "[TTFT 0.50s, 50 tok/s, total 2.50s]" in capsys.readouterr().err
+
+
+def test_no_timing_line_without_text(monkeypatch, capsys):
+    fake_clock(monkeypatch, 10.0, 12.5)  # only start and end: no first text
+    client = FakeClient(Reply([""]))
+    run(monkeypatch, client, ["hi"])
+    assert "[TTFT" not in capsys.readouterr().err
+
+
+def test_speed_is_na_when_reply_ends_with_first_text(monkeypatch, capsys):
+    # The whole reply arrived at once: no time between first text and end.
+    fake_clock(monkeypatch, 10.0, 10.5, 10.5)
+    client = FakeClient(Reply(["Hello"], output_tokens=100))
+    run(monkeypatch, client, ["hi"])
+    assert "[TTFT 0.50s, n/a, total 0.50s]" in capsys.readouterr().err

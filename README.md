@@ -322,3 +322,78 @@ and fails if coverage drops below 95%. To run the same check locally:
 pip install ".[dev]"
 python -m pytest -o pythonpath= --cov=llm_chat --cov-fail-under=95
 ```
+
+## Experiments
+
+### Temperature
+
+Model: `llama3.2` (local), prompt: `Write one sentence about a cat`. Five
+attempts for each temperature. After each attempt, `/reset` cleared the
+history, so every attempt started with a clean context.
+
+**Temperature 0.0**
+
+1. The sleek black cat with bright green eyes sat serenely on the windowsill, watching the world go by with an air of quiet contentment.
+2. The sleek black cat with bright green eyes sat serenely on the windowsill, watching the world go by with an air of quiet contentment.
+3. The sleek black cat with bright green eyes sat serenely on the windowsill, watching the world go by with an air of quiet contentment.
+4. The sleek black cat with bright green eyes sat serenely on the windowsill, watching the world go by with an air of quiet contentment.
+5. The sleek black cat with bright green eyes sat serenely on the windowsill, watching the world go by with an air of quiet contentment.
+
+**Temperature 1.0**
+
+1. The cat curled up on the windowsill, its eyes gazing lazily at the birds outside as the morning sunlight danced across its soft fur.
+2. The sleek black cat with vibrant green eyes sat serenely on the windowsill, watching the world outside with a tranquil intensity.
+3. The adorable little grey cat curled up in the sunbeam, purring contentedly as it chased the occasional fly with a quick flick of its tail.
+4. The sleek and agile feline padded silently across the soft cushion, her bright green eyes gleaming with instinctive curiosity.
+5. The sleek black cat with piercing green eyes sat lazily on the windowsill, watching the birds outside with an air of casual elegance.
+
+**Conclusion.** With a low temperature, the model is more consistent: it tends
+to respond with the most probable tokens. With a high temperature, the model is
+more creative: it uses less probable tokens more often.
+
+### TTFT, TPS and cost
+
+Prompt: `Explain how TCP establishes a connection, in 5 short paragraphs`,
+`--max-tokens 1024`. One warm-up run, then 5 runs with `/reset` before each, so
+every run started with a clean context. The table shows the median of the 5 runs.
+
+| Model | TTFT | Speed | Total | Tokens in / out | Cost |
+|---|---|---|---|-----------------|---|
+| `claude-haiku-5-5` | 0.84 s | 213 tok/s | 3.47 s | 32 / 561        | $0.000284 |
+| `claude-opus-5-5` | 1.85 s | 118 tok/s | 8.85 s | 32 / 814        | $0.016408 |
+| `llama3:8b` (local) | 0.06 s | 89 tok/s | 3.47 s | 23 / 316        | $0 |
+
+**Conclusion.**
+
+- **TTFT.** Bigger models (like Claude Opus) have a longer TTFT. The local model
+  starts answering almost instantly (0.06 s), because no request goes over the
+  network and the warm-up run had already loaded the model into memory.
+- **Speed.** Smaller models generate faster: Haiku is about 1.8× faster than
+  Opus (213 vs 118 tok/s). The local model is the slowest (89 tok/s), but still
+  faster than anyone reads.
+- **Cost.** Opus costs about 58× more per request than Haiku ($0.016408 vs
+  $0.000284): its output price is 40× higher, and it wrote about 45% more tokens.
+  For 1,000 such requests, that is about $0.28 for Haiku and $16.41 for Opus.
+- **Total time** depends on the reply length, not only on speed. Llama generates
+  more slowly than Haiku, but its total time is the same (3.47 s), because its
+  reply was about half as long.
+- **Reply length** differs between models for the same prompt: "5 short
+  paragraphs" gave 316, 561 and 814 tokens. A longer reply costs more and takes
+  longer.
+- **Token counts** can't be compared across providers: the same prompt is 32
+  input tokens for Claude and 23 for Llama, because each model family has its
+  own tokenizer.
+- **Quality** was not compared. The cheapest or fastest model is only better if
+  its answer is good enough.
+
+### Strawberry
+
+Model: `llama3:8b` (local).
+
+| Prompt | Response |
+|---|---|
+| `Count "r" in "strawberry"` | The word "strawberry" contains 2 "r"s. |
+| `Reverse the string "Barcelona"` | The reversed string is "Onalcerab". |
+
+**Conclusion.** Models are not good at spelling, and they can't count. Models
+see tokens, not words or letters. This is why they fail at such tasks.

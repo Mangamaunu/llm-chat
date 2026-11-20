@@ -2,6 +2,7 @@ import argparse
 import functools
 import os
 import sys
+import time
 
 from .commands import Context, dispatch
 from .core.chat_client import ChatClient
@@ -160,11 +161,17 @@ def main(argv: list[str] | None = None) -> None:
                 break
         else:
             try:
+
+                start = time.perf_counter()
+                first = None
                 got_text = False
                 for text in ctx.client.stream_chat(line):
                     if text.strip():
                         got_text = True
+                        if first is None:
+                            first = time.perf_counter()   # first visible text
                     print(text, end="", flush=True)
+                end = time.perf_counter()
 
             except LLMError as ex:
                 print(f"\n[error: {ex}]")
@@ -190,6 +197,11 @@ def main(argv: list[str] | None = None) -> None:
                 if u.cache_creation_input_tokens:
                     tokens += f" + {u.cache_creation_input_tokens:,} cache write".replace(",", " ")
                 print(f"[{u.model}: {tokens} / {u.output_tokens} out, {cost}]")
+
+            if first is not None and u is not None:
+                generation = end - first
+                speed = f"{u.output_tokens / generation:.0f} tok/s" if generation > 0 else "n/a"
+                print(f"[TTFT {first - start:.2f}s, {speed}, total {end - start:.2f}s]", file=sys.stderr)
 
             if ctx.client.last_stop_reason:
                 formatter = _STOP_REASONS.get(ctx.client.last_stop_reason)
