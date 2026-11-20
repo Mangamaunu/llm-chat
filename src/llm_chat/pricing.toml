@@ -298,6 +298,12 @@ output = 0
 cache_write = 0
 cache_read = 0
 
+[models."llama3:8b"]
+input = 0
+output = 0
+cache_write = 0
+cache_read = 0
+
 [models."gpt-oss:20b"]
 input = 0
 output = 0
